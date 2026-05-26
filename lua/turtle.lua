@@ -31,15 +31,40 @@ end
 
 -- ── GitHub URL fetch ──────────────────────────────────────────────────────────
 local function fetchServerUrl()
+    print("[DBG] HTTP GET " .. GITHUB_API)
     local ok, resp = pcall(http.get, GITHUB_API, {
         ["Accept"]     = "application/vnd.github.v3+json",
         ["User-Agent"] = "CC-Turtle/2.0",
     })
-    if not ok or not resp then return nil end
+    if not ok then
+        print("[DBG] pcall failed: " .. tostring(resp))
+        return nil
+    end
+    if not resp then
+        print("[DBG] http.get returned nil (HTTP disabled or network error)")
+        return nil
+    end
+    local status = resp.getResponseCode and resp.getResponseCode() or "?"
+    print("[DBG] HTTP status: " .. tostring(status))
     local body = resp.readAll(); resp.close()
+    print("[DBG] Body length: " .. #body .. " chars")
+    if #body < 10 then
+        print("[DBG] Body: " .. body)
+        return nil
+    end
     local data = textutils.unserializeJSON(body)
-    if not data or not data.content then return nil end
+    if not data then
+        print("[DBG] JSON parse failed. First 80 chars: " .. body:sub(1,80))
+        return nil
+    end
+    if not data.content then
+        local msg = data.message or "(no message field)"
+        print("[DBG] No 'content' in response. message=" .. tostring(msg))
+        return nil
+    end
+    print("[DBG] b64 content length: " .. #data.content)
     local url = b64decode(data.content):gsub("%s+", "")
+    print("[DBG] Decoded URL (" .. #url .. " chars): " .. url)
     return url ~= "" and url or nil
 end
 
@@ -358,7 +383,18 @@ end
 local function postJSON(url, data)
     local body = textutils.serializeJSON(data)
     local ok, resp = pcall(http.post, url, body, {["Content-Type"] = "application/json"})
-    if not ok or not resp then return nil end
+    if not ok then
+        print("[DBG] POST pcall error: " .. tostring(resp))
+        return nil
+    end
+    if not resp then
+        print("[DBG] POST returned nil (server down or URL wrong?)")
+        return nil
+    end
+    local status = resp.getResponseCode and resp.getResponseCode() or "?"
+    if status ~= 200 then
+        print("[DBG] POST status: " .. tostring(status))
+    end
     local text = resp.readAll(); resp.close()
     return textutils.unserializeJSON(text)
 end
@@ -391,6 +427,7 @@ local function main()
     inspectAround()
 
     local pollUrl  = serverUrl .. "/api/turtle/poll"
+    print("[DBG] Poll URL: " .. pollUrl)
     local pollCount = 0
     local failures = 0
 
@@ -404,6 +441,10 @@ local function main()
         end
 
         local status = buildStatus()
+        local ok_build, err_build = pcall(function() return textutils.serializeJSON(status) end)
+        if not ok_build then
+            print("[DBG] buildStatus serialization error: " .. tostring(err_build))
+        end
         local resp   = postJSON(pollUrl, status)
 
         if resp then

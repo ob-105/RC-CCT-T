@@ -37,15 +37,35 @@ end
 
 -- ── GitHub URL fetch ──────────────────────────────────────────────────────────
 local function fetchServerUrl()
+    print("[DBG] HTTP GET " .. GITHUB_API)
     local ok, resp = pcall(http.get, GITHUB_API, {
         ["Accept"]     = "application/vnd.github.v3+json",
         ["User-Agent"] = "CC-BaseStation/2.0",
     })
-    if not ok or not resp then return nil end
+    if not ok then
+        print("[DBG] pcall failed: " .. tostring(resp))
+        return nil
+    end
+    if not resp then
+        print("[DBG] http.get returned nil (HTTP disabled or network error)")
+        return nil
+    end
+    local status = resp.getResponseCode and resp.getResponseCode() or "?"
+    print("[DBG] HTTP status: " .. tostring(status))
     local body = resp.readAll(); resp.close()
+    print("[DBG] Body length: " .. #body .. " chars")
     local data = textutils.unserializeJSON(body)
-    if not data or not data.content then return nil end
+    if not data then
+        print("[DBG] JSON parse failed. First 80 chars: " .. body:sub(1,80))
+        return nil
+    end
+    if not data.content then
+        local msg = data.message or "(no message)"
+        print("[DBG] No 'content'. message=" .. tostring(msg))
+        return nil
+    end
     local url = b64decode(data.content):gsub("%s+", "")
+    print("[DBG] Decoded URL (" .. #url .. " chars): " .. url)
     return url ~= "" and url or nil
 end
 
@@ -58,16 +78,28 @@ local function findScannerSide()
     for _, name in ipairs(peripheral.getNames()) do
         toCheck[#toCheck + 1] = name
     end
+    print("[DBG] Checking " .. #toCheck .. " peripheral locations...")
     for _, loc in ipairs(toCheck) do
-        local ok, mods = pcall(peripheral.call, loc, "listModules")
-        if ok and type(mods) == "table" then
-            for _, m in ipairs(mods) do
-                if m == "plethora:scanner" then
-                    return loc
+        local ptype = peripheral.getType(loc)
+        if ptype then
+            print("[DBG]  " .. loc .. " => type: " .. tostring(ptype))
+            local ok, mods = pcall(peripheral.call, loc, "listModules")
+            if ok and type(mods) == "table" then
+                print("[DBG]    modules: " .. textutils.serialize(mods))
+                for _, m in ipairs(mods) do
+                    if m == "plethora:scanner" then
+                        print("[DBG]    FOUND scanner on " .. loc)
+                        return loc
+                    end
                 end
+            elseif ok then
+                print("[DBG]    listModules returned: " .. tostring(mods))
+            else
+                print("[DBG]    listModules error: " .. tostring(mods))
             end
         end
     end
+    print("[DBG] No scanner module found in any peripheral")
     return nil
 end
 

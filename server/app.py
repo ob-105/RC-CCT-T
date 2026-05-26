@@ -30,24 +30,21 @@ _state: dict[str, Any] = {
         "inventory": [None] * 16,
         "selected_slot": 1,
         "surroundings": {"front": None, "up": None, "down": None},
-        "scan": [],
         "last_result": None,
+        "map_size": 0,
+        "has_scanner": False,
     },
     "base": {
         "connected": False,
         "last_seen": 0.0,
-        "player": {
-            "name": "",
-            "uuid": "",
-            "rotation": {"yaw": 0.0, "pitch": 0.0},
-            "inventory": [],
-            "ender": [],
-            "equipment": {},
-        },
-        "entities": [],
-        "blocks": [],
+        "base_pos": {"x": 0, "y": 0, "z": 0},
+        "scanner_name": "",
     },
 }
+
+# Persistent world map: "x,y,z" -> {name, x, y, z}
+# Populated by block_delta from the turtle and base station.
+_world_map: dict[str, dict] = {}
 
 _command_queue: deque[dict] = deque()
 _command_log: deque[dict] = deque(maxlen=50)
@@ -55,6 +52,21 @@ _command_log: deque[dict] = deque(maxlen=50)
 
 def _alive(last_seen: float, timeout: float = 10.0) -> bool:
     return (time.time() - last_seen) < timeout
+
+
+def _merge_block_delta(delta: list[dict]) -> None:
+    """Merge a block delta list into the world map (call under _lock)."""
+    for block in delta:
+        key = f"{block['x']},{block['y']},{block['z']}"
+        if block.get("air"):
+            _world_map.pop(key, None)
+        elif block.get("name"):
+            _world_map[key] = {
+                "name": block["name"],
+                "x": block["x"],
+                "y": block["y"],
+                "z": block["z"],
+            }
 
 
 # ── Turtle endpoints ──────────────────────────────────────────────────────────
@@ -70,10 +82,13 @@ def turtle_poll():
         for key in (
             "position", "facing", "fuel", "fuel_limit",
             "inventory", "selected_slot", "surroundings",
-            "scan", "last_result",
+            "last_result", "map_size", "has_scanner",
         ):
             if key in data:
                 _state["turtle"][key] = data[key]
+
+        if "block_delta" in data and isinstance(data["block_delta"], list):
+            _merge_block_delta(data["block_delta"])
 
         cmd = _command_queue.popleft() if _command_queue else None
 
@@ -84,18 +99,19 @@ def turtle_poll():
 
 @app.route("/api/base/poll", methods=["POST"])
 def base_poll():
-    """Base station POSTs introspection / sensor data."""
+    """Base station POSTs scanner block data (already in world coordinates)."""
     data = request.get_json(silent=True) or {}
     with _lock:
         _state["base"]["last_seen"] = time.time()
         _state["base"]["connected"] = True
 
-        if "player" in data:
-            _state["base"]["player"].update(data["player"])
-        if "entities" in data:
-            _state["base"]["entities"] = data["entities"]
-        if "blocks" in data:
-            _state["base"]["blocks"] = data["blocks"]
+        if "base_pos" in data:
+            _state["base"]["base_pos"] = data["base_pos"]
+        if "scanner_name" in data:
+            _state["base"]["scanner_name"] = data["scanner_name"]
+
+        if "block_delta" in data and isinstance(data["block_delta"], list):
+            _merge_block_delta(data["block_delta"])
 
     return jsonify({"ok": True})
 
@@ -104,16 +120,51 @@ def base_poll():
 
 @app.route("/api/state")
 def api_state():
-    """Full system snapshot for the web UI."""
+    """Full system snapshot for the web UI (no world map — use /api/worldmap)."""
     with _lock:
         s = copy.deepcopy(_state)
         queue_len = len(_command_queue)
 
     now = time.time()
     s["turtle"]["connected"] = _alive(s["turtle"]["last_seen"])
-    s["base"]["connected"] = _alive(s["base"]["last_seen"])
+    s["base"]["connected"]   = _alive(s["base"]["last_seen"])
     s["queue_length"] = queue_len
+    s["world_map_size"] = len(_world_map)
     return jsonify(s)
+
+
+@app.route("/api/worldmap")
+def api_worldmap():
+    """
+    Return blocks from the world map near the turtle's current position.
+    Optional query params: cx,cy,cz (center), radius (default 32).
+    """
+    cx = int(request.args.get("cx", 0))
+    cy = int(request.args.get("cy", 0))
+    cz = int(request.args.get("cz", 0))
+    radius = int(request.args.get("radius", 32))
+
+    with _lock:
+        # Use turtle position as default center
+        tp = _state["turtle"]["position"]
+        if not request.args.get("cx"):
+            cx, cy, cz = tp.get("x", 0), tp.get("y", 0), tp.get("z", 0)
+        blocks = [
+            b for b in _world_map.values()
+            if abs(b["x"] - cx) <= radius
+            and abs(b["y"] - cy) <= radius
+            and abs(b["z"] - cz) <= radius
+        ]
+
+    return jsonify(blocks)
+
+
+@app.route("/api/worldmap/clear", methods=["POST"])
+def api_worldmap_clear():
+    """Wipe the server-side world map."""
+    with _lock:
+        _world_map.clear()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/command", methods=["POST"])
@@ -133,17 +184,9 @@ def api_command():
 
 @app.route("/api/command/clear", methods=["POST"])
 def api_command_clear():
-    """Clear all pending commands."""
     with _lock:
         _command_queue.clear()
     return jsonify({"ok": True})
-
-
-@app.route("/api/command/log")
-def api_command_log():
-    with _lock:
-        log = list(_command_log)
-    return jsonify(log)
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -151,7 +194,6 @@ def api_command_log():
 @app.route("/")
 def index():
     return send_from_directory(_STATIC, "index.html")
-
 
 @app.route("/<path:path>")
 def static_catch(path):

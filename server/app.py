@@ -107,8 +107,10 @@ def base_poll():
 
         if "base_pos" in data:
             _state["base"]["base_pos"] = data["base_pos"]
-        if "scanner_name" in data:
-            _state["base"]["scanner_name"] = data["scanner_name"]
+        if "scanner_side" in data:
+            _state["base"]["scanner_side"] = data["scanner_side"]
+        if "players" in data:
+            _state["base"]["players"] = data["players"]
 
         if "block_delta" in data and isinstance(data["block_delta"], list):
             _merge_block_delta(data["block_delta"])

@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RC-CCT-T · Turtle Remote</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0f1117;
+    --panel:   #1a1d26;
+    --border:  #2a2d3a;
+    --accent:  #4f9eff;
+    --green:   #3ecf6a;
+    --red:     #ff5555;
+    --yellow:  #f0c040;
+    --text:    #d0d4e0;
+    --muted:   #606478;
+    --btn:     #252838;
+    --btn-hov: #303450;
+    --btn-act: #4f9eff;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+                font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; }
+
+  /* ── Layout ── */
+  #app { display: grid; height: 100vh;
+         grid-template-rows: 40px 1fr 110px;
+         grid-template-columns: 230px 1fr 260px; }
+
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 16px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: .05em; }
+  .status-pill {
+    display: flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 12px;
+    background: var(--btn); font-size: 11px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .dot.on  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.off { background: var(--muted); }
+  #queue-badge { margin-left: auto; font-size: 11px; color: var(--muted); }
+  #clear-btn {
+    padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--btn); color: var(--text); cursor: pointer; font-size: 11px;
+  }
+  #clear-btn:hover { background: var(--red); border-color: var(--red); color: #fff; }
+
+  /* ── Panels ── */
+  .panel {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 10px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .panel.right { border-right: none; border-left: 1px solid var(--border); }
+
+  section-title, .sec-title {
+    display: block;
+    font-size: 10px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  /* ── 3D canvas ── */
+  #canvas-wrap {
+    position: relative; overflow: hidden;
+    background: #070a10;
+  }
+  #three-canvas { display: block; }
+  #facing-label {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 8px;
+    font-size: 11px; color: var(--accent); pointer-events: none;
+  }
+
+  /* ── Bottom bar ── */
+  #bottom-bar {
+    grid-column: 1 / -1;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 8px 14px;
+    overflow-x: auto;
+  }
+  .surr-block {
+    min-width: 100px;
+    background: var(--btn); border-radius: 6px; padding: 6px 8px;
+  }
+  .surr-block .label { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+  .surr-block .value { font-size: 11px; word-break: break-all; }
+  #base-summary {
+    flex: 1; display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  .base-chip {
+    background: var(--btn); border-radius: 6px; padding: 6px 8px;
+    font-size: 11px; min-width: 120px;
+  }
+  .base-chip .label { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+
+  /* ── Controls ── */
+  .dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 36px);
+    grid-template-rows: repeat(3, 36px);
+    gap: 3px;
+    justify-content: center;
+  }
+  .dpad .empty { }
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--btn);
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .1s, border-color .1s;
+    user-select: none;
+  }
+  .btn:hover  { background: var(--btn-hov); }
+  .btn:active, .btn.active { background: var(--btn-act); border-color: var(--btn-act); color: #fff; }
+  .btn.danger:hover { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn.warn:hover   { background: var(--yellow); border-color: var(--yellow); color: #111; }
+  .btn.good:hover   { background: var(--green); border-color: var(--green); color: #111; }
+
+  .action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+  .action-grid .btn { height: 30px; font-size: 11px; }
+
+  /* ── Status row ── */
+  .stat-row { display: flex; justify-content: space-between; align-items: center; }
+  .stat-label { color: var(--muted); }
+  .stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .fuel-bar {
+    height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 3px;
+  }
+  .fuel-fill { height: 100%; background: var(--green); transition: width .5s; }
+
+  /* ── Inventory ── */
+  .inv-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 3px;
+  }
+  .inv-slot {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--btn);
+    padding: 4px;
+    cursor: pointer;
+    min-height: 44px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    font-size: 10px;
+    transition: border-color .1s;
+  }
+  .inv-slot:hover { border-color: var(--accent); }
+  .inv-slot.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .inv-slot .item-name { color: var(--text); line-height: 1.3; word-break: break-word; }
+  .inv-slot .item-count { color: var(--yellow); text-align: right; font-weight: 700; }
+  .inv-slot .slot-num { color: var(--muted); font-size: 9px; }
+
+  /* ── Equipment ── */
+  .equip-grid { display: flex; flex-direction: column; gap: 4px; }
+  .equip-row { display: flex; gap: 6px; align-items: center; }
+  .equip-slot-label { color: var(--muted); width: 42px; font-size: 11px; }
+  .equip-slot-value { background: var(--btn); border: 1px solid var(--border);
+                       border-radius: 4px; padding: 3px 7px; flex: 1; font-size: 11px;
+                       min-height: 24px; }
+
+  /* ── Entity list ── */
+  .entity-list { display: flex; flex-direction: column; gap: 3px; max-height: 100px; overflow-y: auto; }
+  .entity-item { background: var(--btn); border-radius: 4px; padding: 3px 6px; font-size: 11px;
+                  display: flex; justify-content: space-between; }
+
+  /* ── Kbd hint ── */
+  kbd { background: var(--btn); border: 1px solid var(--border); border-radius: 3px;
+        padding: 1px 4px; font-size: 10px; font-family: monospace; }
+  .hint-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+  .hint-row  { display: flex; gap: 5px; align-items: center; font-size: 11px; color: var(--muted); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ── -->
+  <header>
+    <h1>RC-CCT-T</h1>
+    <div class="status-pill">
+      <div class="dot off" id="turtle-dot"></div>
+      <span id="turtle-status">Turtle offline</span>
+    </div>
+    <div class="status-pill">
+      <div class="dot off" id="base-dot"></div>
+      <span id="base-status">Base offline</span>
+    </div>
+    <span id="queue-badge">Queue: 0</span>
+    <button id="clear-btn" onclick="clearQueue()">Clear queue</button>
+  </header>
+
+  <!-- ── Left panel: controls ── -->
+  <div class="panel" id="left-panel">
+
+    <div>
+      <span class="sec-title">Movement</span>
+      <!-- Vertical strip: Up, dpad, Down -->
+      <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+        <button class="btn" style="width:36px;height:36px;" id="btn-up"      onclick="cmd('up')"       title="Q — Up">▲ᵤ</button>
+        <div class="dpad">
+          <div class="empty"></div>
+          <button class="btn" id="btn-forward"   onclick="cmd('forward')"   title="W">▲</button>
+          <div class="empty"></div>
+          <button class="btn" id="btn-turnleft"  onclick="cmd('turnLeft')"  title="A">↺</button>
+          <button class="btn" id="btn-back"      onclick="cmd('back')"      title="S">▼</button>
+          <button class="btn" id="btn-turnright" onclick="cmd('turnRight')" title="D">↻</button>
+        </div>
+        <button class="btn" style="width:36px;height:36px;" id="btn-down"    onclick="cmd('down')"     title="E — Down">▼ᴅ</button>
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Actions</span>
+      <div class="action-grid">
+        <button class="btn danger" onclick="cmd('digUp')"    title="F">⛏ Dig ↑</button>
+        <button class="btn good"   onclick="cmd('placeUp')"  title="G">🧱 Place ↑</button>
+        <button class="btn danger" onclick="cmd('dig')"      title="Space">⛏ Dig →</button>
+        <button class="btn good"   onclick="cmd('place')"    title="R">🧱 Place →</button>
+        <button class="btn danger" onclick="cmd('digDown')"  title="X">⛏ Dig ↓</button>
+        <button class="btn good"   onclick="cmd('placeDown')" title="V">🧱 Place ↓</button>
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Tool</span>
+      <div class="action-grid">
+        <button class="btn warn" onclick="cmd('equipLeft')">Equip L</button>
+        <button class="btn warn" onclick="cmd('equipRight')">Equip R</button>
+        <button class="btn"      onclick="cmd('refuel',{count:64})">Refuel</button>
+        <button class="btn"      onclick="cmd('suck')">Suck →</button>
+        <button class="btn"      onclick="cmd('drop')">Drop →</button>
+        <button class="btn"      onclick="cmd('inspect')">Inspect</button>
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Status</span>
+      <div style="display:flex;flex-direction:column;gap:5px;">
+        <div class="stat-row"><span class="stat-label">Fuel</span><span class="stat-value" id="fuel-val">—</span></div>
+        <div class="fuel-bar"><div class="fuel-fill" id="fuel-fill" style="width:0%"></div></div>
+        <div class="stat-row"><span class="stat-label">Position</span><span class="stat-value" id="pos-val">—</span></div>
+        <div class="stat-row"><span class="stat-label">Facing</span><span class="stat-value" id="facing-val">—</span></div>
+        <div class="stat-row"><span class="stat-label">Slot</span><span class="stat-value" id="slot-val">—</span></div>
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Keyboard</span>
+      <div class="hint-grid">
+        <div class="hint-row"><kbd>W</kbd> Forward</div>
+        <div class="hint-row"><kbd>S</kbd> Back</div>
+        <div class="hint-row"><kbd>A</kbd> Turn L</div>
+        <div class="hint-row"><kbd>D</kbd> Turn R</div>
+        <div class="hint-row"><kbd>Q</kbd> Up</div>
+        <div class="hint-row"><kbd>E</kbd> Down</div>
+        <div class="hint-row"><kbd>Space</kbd> Dig →</div>
+        <div class="hint-row"><kbd>R</kbd> Place →</div>
+        <div class="hint-row"><kbd>F</kbd> Dig ↑</div>
+        <div class="hint-row"><kbd>X</kbd> Dig ↓</div>
+        <div class="hint-row"><kbd>1-9</kbd> Select slot</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Center: 3D view ── -->
+  <div id="canvas-wrap">
+    <canvas id="three-canvas"></canvas>
+    <div id="facing-label">Facing: north</div>
+  </div>
+
+  <!-- ── Right panel: inventory + base ── -->
+  <div class="panel right" id="right-panel">
+
+    <div>
+      <span class="sec-title">Turtle Inventory</span>
+      <div class="inv-grid" id="inv-grid">
+        <!-- slots filled by JS -->
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Equipment (turtle)</span>
+      <div class="equip-grid" id="turtle-equip">
+        <div class="equip-row"><span class="equip-slot-label">Left</span><div class="equip-slot-value" id="equip-left">—</div></div>
+        <div class="equip-row"><span class="equip-slot-label">Right</span><div class="equip-slot-value" id="equip-right">—</div></div>
+      </div>
+    </div>
+
+    <hr style="border-color:var(--border)">
+
+    <!-- Base station sections — hidden when base is offline -->
+    <div id="base-offline-msg" style="color:var(--muted);font-size:12px;text-align:center;padding:8px 0;">
+      Base station offline<br>
+      <span style="font-size:10px">(optional — run install_base.lua to enable)</span>
+    </div>
+
+    <div id="base-online-sections" style="display:none;flex-direction:column;gap:10px;">
+
+      <div>
+        <span class="sec-title">Base Station — Player</span>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div class="stat-row"><span class="stat-label">Name</span><span class="stat-value" id="base-name">—</span></div>
+          <div class="stat-row"><span class="stat-label">Yaw/Pitch</span><span class="stat-value" id="base-rot">—</span></div>
+        </div>
+      </div>
+
+      <div>
+        <span class="sec-title">Player Inventory (base)</span>
+        <div class="inv-grid" id="base-inv-grid" style="grid-template-columns:repeat(4,1fr);"></div>
+      </div>
+
+      <div>
+        <span class="sec-title">Player Equipment</span>
+        <div class="equip-grid">
+          <div class="equip-row"><span class="equip-slot-label">Head</span><div class="equip-slot-value" id="eq-head">—</div></div>
+          <div class="equip-row"><span class="equip-slot-label">Chest</span><div class="equip-slot-value" id="eq-chest">—</div></div>
+          <div class="equip-row"><span class="equip-slot-label">Legs</span><div class="equip-slot-value" id="eq-legs">—</div></div>
+          <div class="equip-row"><span class="equip-slot-label">Feet</span><div class="equip-slot-value" id="eq-feet">—</div></div>
+          <div class="equip-row"><span class="equip-slot-label">Main</span><div class="equip-slot-value" id="eq-main">—</div></div>
+          <div class="equip-row"><span class="equip-slot-label">Off</span><div class="equip-slot-value" id="eq-off">—</div></div>
+        </div>
+      </div>
+
+      <div>
+        <span class="sec-title">Nearby Entities</span>
+        <div class="entity-list" id="entity-list"></div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- ── Bottom: surroundings ── -->
+  <div id="bottom-bar">
+    <div class="surr-block">
+      <div class="label">Front</div>
+      <div class="value" id="surr-front">—</div>
+    </div>
+    <div class="surr-block">
+      <div class="label">Above</div>
+      <div class="value" id="surr-up">—</div>
+    </div>
+    <div class="surr-block">
+      <div class="label">Below</div>
+      <div class="value" id="surr-down">—</div>
+    </div>
+    <div id="base-summary">
+      <!-- base chips -->
+    </div>
+  </div>
+
+</div>
+
+<!-- Three.js via importmap -->
+<script type="importmap">
+{
+  "imports": {
+    "three":          "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/":  "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Three.js setup ────────────────────────────────────────────────────────────
+const wrap   = document.getElementById('canvas-wrap');
+const canvas = document.getElementById('three-canvas');
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x070a10);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 500);
+camera.position.set(8, 8, 8);
+camera.lookAt(0, 0, 0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.1;
+controls.target.set(0, 0, 0);
+
+// Lighting
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(5, 10, 7);
+scene.add(sun);
+
+// Grid
+const grid = new THREE.GridHelper(40, 40, 0x2a2d3a, 0x1e2130);
+scene.add(grid);
+
+// Turtle marker
+const turtleGeo = new THREE.BoxGeometry(0.9, 0.6, 0.9);
+const turtleMat = new THREE.MeshLambertMaterial({ color: 0x4f9eff });
+const turtleMesh = new THREE.Mesh(turtleGeo, turtleMat);
+turtleMesh.position.set(0, 0.3, 0);
+scene.add(turtleMesh);
+
+// Facing arrow (cone)
+const arrowGeo = new THREE.ConeGeometry(0.18, 0.5, 8);
+const arrowMat = new THREE.MeshLambertMaterial({ color: 0xff5555 });
+const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
+scene.add(arrowMesh);
+
+const FACING_DIR = {
+  north: new THREE.Vector3( 0, 0, -1),
+  south: new THREE.Vector3( 0, 0,  1),
+  east:  new THREE.Vector3( 1, 0,  0),
+  west:  new THREE.Vector3(-1, 0,  0),
+};
+const FACING_ROT = {
+  north: 0,
+  east:  -Math.PI / 2,
+  south: Math.PI,
+  west:  Math.PI / 2,
+};
+
+function updateArrow(facing) {
+  const dir = FACING_DIR[facing] || FACING_DIR.north;
+  arrowMesh.position.copy(turtleMesh.position).addScaledVector(dir, 0.7);
+  arrowMesh.position.y = 0.35;
+  arrowMesh.rotation.set(0, FACING_ROT[facing] || 0, -Math.PI / 2);
+}
+updateArrow('north');
+
+// Block pool
+const blockGeo = new THREE.BoxGeometry(0.95, 0.95, 0.95);
+const matCache = new Map();
+let blockMeshes = [];
+const blockGroup = new THREE.Group();
+scene.add(blockGroup);
+
+// Surroundings highlight meshes
+const surrMat = new THREE.MeshLambertMaterial({ color: 0xffaa00, transparent: true, opacity: 0.45 });
+const surrHighlights = {
+  front: new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.05, 1.05), surrMat.clone()),
+  up:    new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.05, 1.05), surrMat.clone()),
+  down:  new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.05, 1.05), surrMat.clone()),
+};
+Object.values(surrHighlights).forEach(m => { m.visible = false; scene.add(m); });
+
+function getMat(color) {
+  if (!matCache.has(color)) matCache.set(color, new THREE.MeshLambertMaterial({ color }));
+  return matCache.get(color);
+}
+
+function blockColor(name) {
+  if (!name) return null;
+  const n = name.toLowerCase();
+  if (n === 'minecraft:air' || n.includes(':air')) return null;
+  if (n.includes('grass'))       return 0x5a8a2a;
+  if (n.includes('dirt'))        return 0x8B6040;
+  if (n.includes('sand'))        return 0xc2b280;
+  if (n.includes('gravel'))      return 0x9e9688;
+  if (n.includes('log') || n.includes('trunk')) return 0x6B3A1F;
+  if (n.includes('leaves'))      return 0x2d6b2d;
+  if (n.includes('water'))       return 0x1E5FFF;
+  if (n.includes('lava'))        return 0xFF4500;
+  if (n.includes('coal'))        return 0x333333;
+  if (n.includes('iron'))        return 0xc0c0c0;
+  if (n.includes('gold'))        return 0xFFD700;
+  if (n.includes('diamond'))     return 0x00c8ff;
+  if (n.includes('emerald'))     return 0x00e080;
+  if (n.includes('redstone'))    return 0xff2222;
+  if (n.includes('glass'))       return 0xaaddff;
+  if (n.includes('planks') || n.includes('wood')) return 0x8B5E3C;
+  if (n.includes('netherrack')) return 0x6B1111;
+  if (n.includes('obsidian'))   return 0x1a0a2e;
+  if (n.includes('bedrock'))    return 0x444444;
+  if (n.includes('snow') || n.includes('ice')) return 0xeeeeff;
+  if (n.includes('clay'))        return 0xa4a7b3;
+  if (n.includes('brick'))       return 0x9e4b3a;
+  if (n.includes('deepslate'))   return 0x555566;
+  if (n.includes('stone'))       return 0x888888;
+  return 0x999999;
+}
+
+function rebuildBlocks(scanData) {
+  blockMeshes.forEach(m => blockGroup.remove(m));
+  blockMeshes = [];
+  if (!scanData) return;
+  for (const b of scanData) {
+    if (!b || b.air) continue;
+    const col = blockColor(b.name);
+    if (col === null) continue;
+    const mesh = new THREE.Mesh(blockGeo, getMat(col));
+    mesh.position.set(b.x, b.y, b.z);
+    blockGroup.add(mesh);
+    blockMeshes.push(mesh);
+  }
+}
+
+function updateSurroundings(surr, facing) {
+  const dir = FACING_DIR[facing] || FACING_DIR.north;
+  const origin = new THREE.Vector3(0, 0, 0);
+
+  const positions = {
+    front: origin.clone().add(dir),
+    up:    new THREE.Vector3(0, 1, 0),
+    down:  new THREE.Vector3(0, -1, 0),
+  };
+
+  for (const [key, mesh] of Object.entries(surrHighlights)) {
+    const info = surr && surr[key];
+    mesh.visible = !!(info && info.name && !info.name.includes(':air'));
+    if (mesh.visible) mesh.position.copy(positions[key]);
+  }
+}
+
+function resizeRenderer() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+resizeRenderer();
+new ResizeObserver(resizeRenderer).observe(wrap);
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+// ── State polling ─────────────────────────────────────────────────────────────
+let lastFacing = 'north';
+
+async function pollState() {
+  try {
+    const r = await fetch('/api/state');
+    if (!r.ok) return;
+    const s = await r.json();
+    applyState(s);
+  } catch (_) {}
+}
+
+function applyState(s) {
+  const t = s.turtle;
+  const b = s.base;
+
+  // Connection indicators
+  setConnection('turtle', t.connected, t.connected ? 'Turtle' : 'Turtle offline');
+  setConnection('base',   b.connected, b.connected ? 'Base'   : 'Base offline');
+
+  document.getElementById('queue-badge').textContent = `Queue: ${s.queue_length ?? 0}`;
+
+  // Turtle status
+  const fuel = t.fuel ?? 0;
+  const fuelLim = t.fuel_limit || 20000;
+  document.getElementById('fuel-val').textContent = fuelLim > 0
+    ? `${fuel} / ${fuelLim}` : fuel;
+  document.getElementById('fuel-fill').style.width =
+    fuelLim > 0 ? `${Math.min(100, fuel / fuelLim * 100).toFixed(1)}%` : '0%';
+
+  const p = t.position || {};
+  document.getElementById('pos-val').textContent =
+    `${p.x ?? 0}, ${p.y ?? 0}, ${p.z ?? 0}`;
+  document.getElementById('facing-val').textContent = t.facing || '—';
+  document.getElementById('slot-val').textContent = t.selected_slot ?? '—';
+
+  // 3D view: update arrow if facing changed
+  if (t.facing && t.facing !== lastFacing) {
+    lastFacing = t.facing;
+    updateArrow(t.facing);
+    document.getElementById('facing-label').textContent = `Facing: ${t.facing}`;
+  }
+
+  // Scan data → blocks
+  rebuildBlocks(t.scan || []);
+
+  // Surroundings
+  const surr = t.surroundings || {};
+  updateSurroundings(surr, t.facing);
+  document.getElementById('surr-front').textContent =
+    surr.front ? (surr.front.name || '(air)') : '—';
+  document.getElementById('surr-up').textContent =
+    surr.up    ? (surr.up.name   || '(air)') : '—';
+  document.getElementById('surr-down').textContent =
+    surr.down  ? (surr.down.name || '(air)') : '—';
+
+  // Inventory grid
+  renderInventory('inv-grid', t.inventory || [], t.selected_slot, true);
+
+  // Base station — show/hide sections based on connection
+  const baseOnline = document.getElementById('base-online-sections');
+  const baseOffline = document.getElementById('base-offline-msg');
+  baseOnline.style.display  = b.connected ? 'flex' : 'none';
+  baseOffline.style.display = b.connected ? 'none' : 'block';
+
+  if (b.connected) {
+    const pl = b.player || {};
+    document.getElementById('base-name').textContent = pl.name || '—';
+    const rot = pl.rotation || {};
+    document.getElementById('base-rot').textContent =
+      `${(rot.yaw||0).toFixed(1)}° / ${(rot.pitch||0).toFixed(1)}°`;
+
+    renderInventory('base-inv-grid', pl.inventory || [], -1, false);
+
+    const eq = pl.equipment || {};
+    const eqIds = ['head','chest','legs','feet','mainhand','offhand'];
+    const eqEls = ['eq-head','eq-chest','eq-legs','eq-feet','eq-main','eq-off'];
+    eqIds.forEach((k, i) => {
+      const el = document.getElementById(eqEls[i]);
+      if (el) el.textContent = eq[k] ? shortName(eq[k].displayName || eq[k].name) : '—';
+    });
+
+    const entList = document.getElementById('entity-list');
+    const ents = b.entities || [];
+    entList.innerHTML = ents.slice(0, 20).map(e =>
+      `<div class="entity-item">
+         <span>${e.name || e.type || '?'}</span>
+         <span style="color:var(--muted)">${d3(e.x)},${d3(e.y)},${d3(e.z)}</span>
+       </div>`
+    ).join('') || '<div style="color:var(--muted);font-size:11px">No entities</div>';
+  }
+}
+
+function d3(v) { return v != null ? Number(v).toFixed(1) : '?'; }
+
+function shortName(n) {
+  if (!n) return '—';
+  return n.replace(/^minecraft:/i, '').replace(/_/g, ' ');
+}
+
+function setConnection(id, on, text) {
+  document.getElementById(`${id}-dot`).className = `dot ${on ? 'on' : 'off'}`;
+  document.getElementById(`${id}-status`).textContent = text;
+}
+
+function renderInventory(gridId, inv, selectedSlot, clickable) {
+  const grid = document.getElementById(gridId);
+  grid.innerHTML = '';
+  for (let i = 0; i < 16; i++) {
+    const item = inv[i] || null;
+    const slot = document.createElement('div');
+    slot.className = 'inv-slot' + ((i + 1) === selectedSlot ? ' selected' : '');
+    slot.innerHTML = `
+      <span class="slot-num">${i + 1}</span>
+      <span class="item-name">${item ? shortName(item.displayName || item.name) : ''}</span>
+      ${item ? `<span class="item-count">${item.count}</span>` : ''}
+    `;
+    if (clickable && item) {
+      slot.onclick = () => sendCmd({ action: 'select', slot: i + 1 });
+    }
+    grid.appendChild(slot);
+  }
+}
+
+// ── Command sending ───────────────────────────────────────────────────────────
+window.cmd = function(action, extra) {
+  sendCmd({ action, ...(extra || {}) });
+};
+
+async function sendCmd(payload) {
+  try {
+    await fetch('/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    flashButton(payload.action);
+  } catch (_) {}
+}
+
+window.clearQueue = async function() {
+  await fetch('/api/command/clear', { method: 'POST' });
+};
+
+function flashButton(action) {
+  const map = {
+    forward: 'btn-forward', back: 'btn-back',
+    turnLeft: 'btn-turnleft', turnRight: 'btn-turnright',
+    up: 'btn-up', down: 'btn-down',
+  };
+  const id = map[action];
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('active');
+  setTimeout(() => el.classList.remove('active'), 180);
+}
+
+// ── Keyboard controls ─────────────────────────────────────────────────────────
+const KEY_MAP = {
+  'w': 'forward', 's': 'back',
+  'a': 'turnLeft', 'd': 'turnRight',
+  'q': 'up', 'e': 'down',
+  ' ': 'dig', 'r': 'place',
+  'f': 'digUp', 'g': 'placeUp',
+  'x': 'digDown', 'v': 'placeDown',
+};
+
+const held = new Set();
+const REPEAT_MS = 200; // ms between repeated commands while key held
+const repeatTimers = {};
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const k = e.key.toLowerCase();
+
+  // Number keys 1-9 → select slot
+  if (k >= '1' && k <= '9') {
+    sendCmd({ action: 'select', slot: parseInt(k) });
+    return;
+  }
+
+  if (!KEY_MAP[k] || held.has(k)) return;
+  e.preventDefault();
+  held.add(k);
+  sendCmd({ action: KEY_MAP[k] });
+
+  // Hold-to-repeat for movement
+  if (['w','s','a','d','q','e'].includes(k)) {
+    repeatTimers[k] = setInterval(() => {
+      if (held.has(k)) sendCmd({ action: KEY_MAP[k] });
+    }, REPEAT_MS);
+  }
+});
+
+document.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  held.delete(k);
+  if (repeatTimers[k]) {
+    clearInterval(repeatTimers[k]);
+    delete repeatTimers[k];
+  }
+});
+
+// ── Start polling ─────────────────────────────────────────────────────────────
+setInterval(pollState, 500);
+pollState();
+</script>
+</body>
+</html>

@@ -142,52 +142,55 @@ local function flushDirty()
     return out
 end
 
--- ── Scanner integration ───────────────────────────────────────────────────────
--- The scanner is a MODULE inside a Plethora module container (manipulator /
--- neural interface), not a peripheral type itself.  We detect it by calling
--- listModules() on every attached peripheral and looking for "plethora:scanner".
--- Returns the side/name string to pass to peripheral.call(), or nil.
-local function findScannerSide()
-    local toCheck = {"left", "right", "top", "bottom", "front", "back"}
+-- ── Scanner integration (Advanced Peripherals Geo Scanner) ───────────────────
+-- Looks for an AP Geo Scanner peripheral attached to any side of the turtle,
+-- or reachable via a wired modem.  Returns a wrapped peripheral object or nil.
+local function findScanner()
+    -- peripheral.find searches all sides + modem network at once
+    local p = peripheral.find("geoScanner")
+    if p then return p end
+    -- Manual fallback in case peripheral.find isn't available
+    local sides = {"left", "right", "top", "bottom", "front", "back"}
     for _, name in ipairs(peripheral.getNames()) do
-        toCheck[#toCheck + 1] = name
+        sides[#sides + 1] = name
     end
-    for _, loc in ipairs(toCheck) do
-        local ok, mods = pcall(peripheral.call, loc, "listModules")
-        if ok and type(mods) == "table" then
-            for _, m in ipairs(mods) do
-                if m == "plethora:scanner" then
-                    return loc
-                end
-            end
+    for _, loc in ipairs(sides) do
+        if peripheral.getType(loc) == "geoScanner" then
+            return peripheral.wrap(loc)
         end
     end
     return nil
 end
 
-local cachedScannerSide = nil
+local cachedScanner  = nil
 local scannerChecked = false
 
-local function getScannerSide()
+local function getScanner()
     if not scannerChecked then
-        cachedScannerSide = findScannerSide()
+        cachedScanner  = findScanner()
         scannerChecked = true
+        if cachedScanner then
+            print("[DBG] Geo Scanner found")
+        end
     end
-    return cachedScannerSide
+    return cachedScanner
 end
 
 -- Run a full scan and update the world map using absolute coordinates.
--- The scanner returns world-axis-aligned offsets so we just add turtle pos.
+-- AP Geo Scanner returns world-axis-aligned offsets — just add turtle pos.
 local function runScanner()
-    local side = getScannerSide()
-    if not side then return false end
-    local ok, blocks = pcall(peripheral.call, side, "scan", 8)
+    local scanner = getScanner()
+    if not scanner then return false end
+    local ok, blocks = pcall(scanner.scan, 8)
     if not ok or type(blocks) ~= "table" then
-        cachedScannerSide = nil; scannerChecked = false  -- redetect next time
+        print("[DBG] scan() failed: " .. tostring(blocks))
+        cachedScanner = nil; scannerChecked = false
         return false
     end
     for _, b in ipairs(blocks) do
-        setBlock(pos.x + b.x, pos.y + b.y, pos.z + b.z, b.air and nil or b.name)
+        local name = b.name or ""
+        local isAir = name == "" or name == "minecraft:air" or name:find(":air$")
+        setBlock(pos.x + b.x, pos.y + b.y, pos.z + b.z, isAir and nil or name)
     end
     pruneMap()
     return true
@@ -340,8 +343,8 @@ local function executeCommand(cmd)
     elseif action == "select" then
         if cmd.slot then ok = turtle.select(cmd.slot) end
 
-    elseif action == "equipLeft"  then ok = turtle.equipLeft();  cachedScannerSide = nil; scannerChecked = false
-    elseif action == "equipRight" then ok = turtle.equipRight(); cachedScannerSide = nil; scannerChecked = false
+    elseif action == "equipLeft"  then ok = turtle.equipLeft();  cachedScanner = nil; scannerChecked = false
+    elseif action == "equipRight" then ok = turtle.equipRight(); cachedScanner = nil; scannerChecked = false
 
     elseif action == "refuel" then
         ok = turtle.refuel(cmd.count or 64)
@@ -375,7 +378,7 @@ local function buildStatus()
         last_result   = lastResult,
         block_delta   = flushDirty(),
         map_size      = mapSize,
-        has_scanner   = getScannerSide() ~= nil,
+        has_scanner   = getScanner() ~= nil,
     }
 end
 
@@ -418,8 +421,10 @@ local function main()
     end
     term.setTextColor(colors.green)
     print("Server: " .. serverUrl)
-    if getScannerSide() then
-        print("Scanner module detected on: " .. getScannerSide())
+    if getScanner() then
+        print("Geo Scanner detected!")
+    else
+        print("(No Geo Scanner found — using inspect() only)")
     end
     term.setTextColor(colors.white)
 

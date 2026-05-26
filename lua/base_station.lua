@@ -14,14 +14,17 @@ local URL_TIMEOUT = 10    -- seconds between GitHub re-checks on failure
 local function b64decode(data)
     local b = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     data = data:gsub("[^" .. b .. "=]", "")
-    return (data:gsub(".", function(x)
+    local bits = data:gsub(".", function(x)
         if x == "=" then return "" end
         local r, f = "", string.find(b, x, 1, true) - 1
         for i = 6, 1, -1 do
             r = r .. (math.floor(f / 2 ^ (i - 1)) % 2 == 1 and "1" or "0")
         end
         return r
-    end):gsub("%d%d%d%d%d%d%d%d", function(x)
+    end)
+    -- Trim to a multiple of 8 to discard base64 padding bits
+    bits = bits:sub(1, math.floor(#bits / 8) * 8)
+    return (bits:gsub("%d%d%d%d%d%d%d%d", function(x)
         local c = 0
         for i = 1, 8 do c = c + (tonumber(x:sub(i, i)) * 2 ^ (8 - i)) end
         return string.char(c)

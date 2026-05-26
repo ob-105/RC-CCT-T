@@ -1,0 +1,17 @@
+# Never commit the startup script — it contains your GitHub token
+start.py
+
+# Claude Code internal files
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+
+# Editor
+.vscode/
+.idea/
+*.swp

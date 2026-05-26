@@ -6,7 +6,8 @@
 local GITHUB_API    = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
 local POLL_SECS     = 0.5   -- how often to poll the server
 local URL_TIMEOUT   = 10    -- seconds between GitHub re-checks on failure
-local SCAN_EVERY    = 10    -- run full scanner every N polls (if available)
+local SCAN_EVERY    = 4     -- run full scanner every N polls (~2s). Scanner travels
+                            -- with the turtle so scan frequently as it moves.
 local MAP_MAX       = 8000  -- max blocks to keep in world map before pruning
 
 -- ── Base-64 decoder ───────────────────────────────────────────────────────────
@@ -143,22 +144,20 @@ local function flushDirty()
 end
 
 -- ── Scanner integration (Advanced Peripherals Geo Scanner) ───────────────────
--- Looks for an AP Geo Scanner peripheral attached to any side of the turtle,
--- or reachable via a wired modem.  Returns a wrapped peripheral object or nil.
+-- The AP Geo Scanner is an equippable peripheral item (like a modem/speaker).
+-- Equip it into the turtle's left or right slot with turtle.equipLeft/Right(),
+-- then it appears as a peripheral on that side and travels with the turtle.
+-- peripheral.find("geoScanner") checks all sides automatically.
 local function findScanner()
-    -- peripheral.find searches all sides + modem network at once
-    local p = peripheral.find("geoScanner")
-    if p then return p end
-    -- Manual fallback in case peripheral.find isn't available
-    local sides = {"left", "right", "top", "bottom", "front", "back"}
-    for _, name in ipairs(peripheral.getNames()) do
-        sides[#sides + 1] = name
-    end
-    for _, loc in ipairs(sides) do
-        if peripheral.getType(loc) == "geoScanner" then
-            return peripheral.wrap(loc)
+    -- Check equipped slots first (left/right) then fall back to general find
+    for _, side in ipairs({"left", "right"}) do
+        if peripheral.getType(side) == "geoScanner" then
+            return peripheral.wrap(side)
         end
     end
+    -- peripheral.find covers all sides + modem-connected peripherals
+    local p = peripheral.find("geoScanner")
+    if p then return p end
     return nil
 end
 

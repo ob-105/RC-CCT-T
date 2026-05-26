@@ -1,10 +1,10 @@
 -- RC-CCT-T  Base Station client  v3.0  (Advanced Peripherals edition)
--- Run on a computer with Advanced Peripherals' Geo Scanner (and optionally
--- a Player Detector) placed adjacent or connected via wired modem.
+-- Run on a computer with Advanced Peripherals peripherals attached.
+-- Geo Scanner: place the block adjacent to this computer (or connect via modem).
+--   Note: the Geo Scanner item is for turtles; the block is for computers.
+-- Player Detector: place adjacent or via modem (optional).
 --
--- Set BASE_POS to the base station computer's in-game coordinates (F3).
--- The Geo Scanner converts relative block offsets to world coordinates using
--- BASE_POS so the turtle and base station share the same world map.
+-- Set BASE_POS to this computer's in-game coordinates (F3 → XYZ).
 
 local GITHUB_API  = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
 local POLL_SECS   = 3

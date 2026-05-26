@@ -1,17 +1,17 @@
--- RC-CCT-T  Base Station client  v2.0
--- Run on a computer with a Plethora block scanner peripheral attached.
--- Scans blocks around the base station and sends them to the control server
--- so they get merged into the shared world map.
+-- RC-CCT-T  Base Station client  v3.0  (Advanced Peripherals edition)
+-- Run on a computer with Advanced Peripherals' Geo Scanner (and optionally
+-- a Player Detector) placed adjacent or connected via wired modem.
 --
--- Set BASE_POS below to the base station's in-game coordinates so the
--- scanned blocks can be positioned correctly in the world map.
--- (You can read your coordinates with F3 in-game.)
+-- Set BASE_POS to the base station computer's in-game coordinates (F3).
+-- The Geo Scanner converts relative block offsets to world coordinates using
+-- BASE_POS so the turtle and base station share the same world map.
 
 local GITHUB_API  = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
-local POLL_SECS   = 3     -- seconds between scans / server updates
-local URL_TIMEOUT = 10    -- seconds between GitHub re-checks on failure
+local POLL_SECS   = 3
+local URL_TIMEOUT = 10
+local SCAN_RADIUS = 8   -- AP Geo Scanner default max is 8 without upgrades
 
--- ── Set this to the base station computer's in-game position ─────────────────
+-- ── Set this to the base station computer's in-game position (F3) ─────────────
 local BASE_POS = { x = 0, y = 0, z = 0 }
 -- ─────────────────────────────────────────────────────────────────────────────
 
@@ -37,84 +37,76 @@ end
 
 -- ── GitHub URL fetch ──────────────────────────────────────────────────────────
 local function fetchServerUrl()
-    print("[DBG] HTTP GET " .. GITHUB_API)
+    print("[DBG] GET " .. GITHUB_API)
     local ok, resp = pcall(http.get, GITHUB_API, {
         ["Accept"]     = "application/vnd.github.v3+json",
-        ["User-Agent"] = "CC-BaseStation/2.0",
+        ["User-Agent"] = "CC-BaseStation/3.0",
     })
-    if not ok then
-        print("[DBG] pcall failed: " .. tostring(resp))
-        return nil
-    end
-    if not resp then
-        print("[DBG] http.get returned nil (HTTP disabled or network error)")
-        return nil
-    end
+    if not ok then print("[DBG] pcall err: " .. tostring(resp)); return nil end
+    if not resp then print("[DBG] http.get=nil"); return nil end
     local status = resp.getResponseCode and resp.getResponseCode() or "?"
-    print("[DBG] HTTP status: " .. tostring(status))
+    print("[DBG] status=" .. tostring(status))
     local body = resp.readAll(); resp.close()
-    print("[DBG] Body length: " .. #body .. " chars")
+    print("[DBG] body len=" .. #body)
     local data = textutils.unserializeJSON(body)
-    if not data then
-        print("[DBG] JSON parse failed. First 80 chars: " .. body:sub(1,80))
-        return nil
-    end
+    if not data then print("[DBG] JSON fail: " .. body:sub(1,80)); return nil end
     if not data.content then
-        local msg = data.message or "(no message)"
-        print("[DBG] No 'content'. message=" .. tostring(msg))
-        return nil
+        print("[DBG] no content, msg=" .. tostring(data.message)); return nil
     end
     local url = b64decode(data.content):gsub("%s+", "")
-    print("[DBG] Decoded URL (" .. #url .. " chars): " .. url)
+    print("[DBG] url=" .. url .. " (len=" .. #url .. ")")
     return url ~= "" and url or nil
 end
 
--- ── Find the scanner side ─────────────────────────────────────────────────────
--- The scanner is a MODULE inside a Plethora module container.
--- We detect it by calling listModules() on attached/networked peripherals.
--- Returns the side or network name to pass to peripheral.call(), or nil.
-local function findScannerSide()
-    local toCheck = { "top", "bottom", "left", "right", "front", "back" }
+-- ── Peripheral discovery ──────────────────────────────────────────────────────
+local function findPeripheral(ptype)
+    -- peripheral.find is the cleanest way in CC:T
+    local p = peripheral.find(ptype)
+    if p then return p end
+    -- Fallback: manual scan of all sides + network names
+    local locations = {"top","bottom","left","right","front","back"}
     for _, name in ipairs(peripheral.getNames()) do
-        toCheck[#toCheck + 1] = name
+        locations[#locations + 1] = name
     end
-    print("[DBG] Checking " .. #toCheck .. " peripheral locations...")
-    for _, loc in ipairs(toCheck) do
-        local ptype = peripheral.getType(loc)
-        if ptype then
-            print("[DBG]  " .. loc .. " => type: " .. tostring(ptype))
-            local ok, mods = pcall(peripheral.call, loc, "listModules")
-            if ok and type(mods) == "table" then
-                print("[DBG]    modules: " .. textutils.serialize(mods))
-                for _, m in ipairs(mods) do
-                    if m == "plethora:scanner" then
-                        print("[DBG]    FOUND scanner on " .. loc)
-                        return loc
-                    end
-                end
-            elseif ok then
-                print("[DBG]    listModules returned: " .. tostring(mods))
-            else
-                print("[DBG]    listModules error: " .. tostring(mods))
-            end
+    for _, loc in ipairs(locations) do
+        if peripheral.getType(loc) == ptype then
+            return peripheral.wrap(loc)
         end
     end
-    print("[DBG] No scanner module found in any peripheral")
     return nil
 end
 
--- ── Collect scanner data and convert to world coordinates ────────────────────
--- The scanner returns offsets in world-aligned axes (not local/facing axes),
--- so converting to world coordinates is simply:  world = BASE_POS + offset
-local function collectBlocks(side)
-    local ok, blocks = pcall(peripheral.call, side, "scan", 8)
-    if not ok or type(blocks) ~= "table" then return nil end
+local function listAllPeripherals()
+    local locations = {"top","bottom","left","right","front","back"}
+    for _, name in ipairs(peripheral.getNames()) do
+        locations[#locations + 1] = name
+    end
+    print("[DBG] All peripherals:")
+    for _, loc in ipairs(locations) do
+        local t = peripheral.getType(loc)
+        if t then print("[DBG]   " .. loc .. " = " .. t) end
+    end
+end
 
+-- ── Geo Scanner — block data ──────────────────────────────────────────────────
+-- AP Geo Scanner returns {name, x, y, z, tags} with world-aligned offsets.
+-- Converting to world coords: world = BASE_POS + offset  (no facing math needed)
+local function collectBlocks(scanner)
+    local ok, blocks = pcall(scanner.scan, SCAN_RADIUS)
+    if not ok then
+        print("[DBG] scan() error: " .. tostring(blocks))
+        return nil
+    end
+    if type(blocks) ~= "table" then
+        print("[DBG] scan() returned " .. type(blocks))
+        return nil
+    end
     local out = {}
     for _, b in ipairs(blocks) do
-        if not b.air then
+        local name = b.name or ""
+        if name ~= "" and name ~= "minecraft:air" and not name:find(":air$") then
             out[#out + 1] = {
-                name = b.name,
+                name = name,
                 x    = BASE_POS.x + b.x,
                 y    = BASE_POS.y + b.y,
                 z    = BASE_POS.z + b.z,
@@ -124,11 +116,37 @@ local function collectBlocks(side)
     return out
 end
 
--- ── HTTP helpers ──────────────────────────────────────────────────────────────
+-- ── Player Detector — optional ────────────────────────────────────────────────
+local function collectPlayers(detector)
+    if not detector then return {} end
+    local ok, players = pcall(detector.getOnlinePlayers)
+    if not ok or type(players) ~= "table" then return {} end
+    local out = {}
+    for _, name in ipairs(players) do
+        local ok2, data = pcall(detector.getPlayer, name)
+        if ok2 and type(data) == "table" then
+            out[#out + 1] = {
+                name      = data.name or name,
+                x         = data.x,
+                y         = data.y,
+                z         = data.z,
+                health    = data.health,
+                maxHealth = data.maxHealth,
+                dimension = data.dimension,
+            }
+        end
+    end
+    return out
+end
+
+-- ── HTTP POST helper ──────────────────────────────────────────────────────────
 local function postJSON(url, data)
     local body = textutils.serializeJSON(data)
     local ok, resp = pcall(http.post, url, body, {["Content-Type"] = "application/json"})
-    if not ok or not resp then return nil end
+    if not ok then print("[DBG] POST err: " .. tostring(resp)); return nil end
+    if not resp then print("[DBG] POST=nil"); return nil end
+    local status = resp.getResponseCode and resp.getResponseCode() or "?"
+    if status ~= 200 then print("[DBG] POST status=" .. tostring(status)) end
     local text = resp.readAll(); resp.close()
     return textutils.unserializeJSON(text)
 end
@@ -136,24 +154,37 @@ end
 -- ── Main ──────────────────────────────────────────────────────────────────────
 local function main()
     term.setTextColor(colors.cyan)
-    print("RC-CCT-T Base Station v2.0 (scanner)")
+    print("RC-CCT-T Base Station v3.0 (Advanced Peripherals)")
     term.setTextColor(colors.white)
 
-    -- Find scanner side
-    local scannerSide = findScannerSide()
-    while not scannerSide do
+    -- Show everything attached so user can see what's available
+    listAllPeripherals()
+
+    -- Find Geo Scanner (required)
+    local scanner = findPeripheral("geoScanner")
+    while not scanner do
         term.setTextColor(colors.red)
-        print("No Plethora scanner module found. Retrying in 5s...")
-        print("Attach a module container with the scanner module to any side.")
+        print("No Geo Scanner found. Place one adjacent or connect via modem.")
         term.setTextColor(colors.white)
         sleep(5)
-        scannerSide = findScannerSide()
+        listAllPeripherals()
+        scanner = findPeripheral("geoScanner")
     end
     term.setTextColor(colors.green)
-    print("Scanner found on: " .. scannerSide)
+    print("Geo Scanner ready.")
     term.setTextColor(colors.white)
-    print("Base position: " .. BASE_POS.x .. ", " .. BASE_POS.y .. ", " .. BASE_POS.z)
-    print("(Edit BASE_POS at the top of this file if incorrect)")
+
+    -- Find Player Detector (optional)
+    local detector = findPeripheral("playerDetector")
+    if detector then
+        term.setTextColor(colors.green)
+        print("Player Detector ready.")
+    else
+        print("(No Player Detector found — player data disabled)")
+    end
+    term.setTextColor(colors.white)
+
+    print("Base pos: " .. BASE_POS.x .. ", " .. BASE_POS.y .. ", " .. BASE_POS.z)
 
     -- Discover server URL
     local serverUrl = nil
@@ -175,32 +206,31 @@ local function main()
     local failures = 0
 
     while true do
-        -- Re-find scanner if it went away
-        if not scannerSide then
-            scannerSide = findScannerSide()
-        end
+        -- Re-acquire if lost
+        if not scanner then scanner = findPeripheral("geoScanner") end
+        if not detector then detector = findPeripheral("playerDetector") end
 
         local blocks = {}
-        if scannerSide then
-            local result = collectBlocks(scannerSide)
+        if scanner then
+            local result = collectBlocks(scanner)
             if result then
                 blocks = result
             else
-                scannerSide = nil  -- errored; redetect next loop
+                scanner = nil  -- will redetect next loop
             end
         end
 
         local payload = {
-            base_pos     = BASE_POS,
-            block_delta  = blocks,
-            scanner_side = scannerSide or "",
+            base_pos    = BASE_POS,
+            block_delta = blocks,
+            players     = collectPlayers(detector),
         }
 
         local resp = postJSON(pollUrl, payload)
         if resp then
             failures = 0
             term.setTextColor(colors.gray)
-            print("Sent " .. #blocks .. " blocks")
+            print("OK — " .. #blocks .. " blocks sent")
             term.setTextColor(colors.white)
         else
             failures = failures + 1
@@ -209,7 +239,6 @@ local function main()
             term.setTextColor(colors.white)
 
             if failures >= 3 then
-                print("Re-checking GitHub...")
                 local newUrl = fetchServerUrl()
                 if newUrl and newUrl ~= serverUrl then
                     serverUrl = newUrl

@@ -49,46 +49,33 @@ local function fetchServerUrl()
     return url ~= "" and url or nil
 end
 
--- ── Find the scanner peripheral ───────────────────────────────────────────────
--- The scanner can be directly attached on any side, or connected via modem.
-local function findScanner()
-    local sides = { "top", "bottom", "left", "right", "front", "back" }
-    for _, side in ipairs(sides) do
-        if peripheral.hasType(side, "plethora:scanner") then
-            return peripheral.wrap(side), side
-        end
-        -- Also check if it's a module container with scanner module
-        local ok, mods = pcall(peripheral.call, side, "listModules")
-        if ok and type(mods) == "table" then
-            for _, m in ipairs(mods) do
-                if m == "plethora:scanner" then
-                    return peripheral.wrap(side), side
-                end
-            end
-        end
-    end
-    -- Check networked peripherals
+-- ── Find the scanner side ─────────────────────────────────────────────────────
+-- The scanner is a MODULE inside a Plethora module container.
+-- We detect it by calling listModules() on attached/networked peripherals.
+-- Returns the side or network name to pass to peripheral.call(), or nil.
+local function findScannerSide()
+    local toCheck = { "top", "bottom", "left", "right", "front", "back" }
     for _, name in ipairs(peripheral.getNames()) do
-        if peripheral.hasType(name, "plethora:scanner") then
-            return peripheral.wrap(name), name
-        end
-        local ok, mods = pcall(peripheral.call, name, "listModules")
+        toCheck[#toCheck + 1] = name
+    end
+    for _, loc in ipairs(toCheck) do
+        local ok, mods = pcall(peripheral.call, loc, "listModules")
         if ok and type(mods) == "table" then
             for _, m in ipairs(mods) do
                 if m == "plethora:scanner" then
-                    return peripheral.wrap(name), name
+                    return loc
                 end
             end
         end
     end
-    return nil, nil
+    return nil
 end
 
 -- ── Collect scanner data and convert to world coordinates ────────────────────
 -- The scanner returns offsets in world-aligned axes (not local/facing axes),
 -- so converting to world coordinates is simply:  world = BASE_POS + offset
-local function collectBlocks(scanner)
-    local ok, blocks = pcall(scanner.scan, 8)
+local function collectBlocks(side)
+    local ok, blocks = pcall(peripheral.call, side, "scan", 8)
     if not ok or type(blocks) ~= "table" then return nil end
 
     local out = {}
@@ -120,18 +107,18 @@ local function main()
     print("RC-CCT-T Base Station v2.0 (scanner)")
     term.setTextColor(colors.white)
 
-    -- Find scanner
-    local scanner, scannerName = findScanner()
-    while not scanner do
+    -- Find scanner side
+    local scannerSide = findScannerSide()
+    while not scannerSide do
         term.setTextColor(colors.red)
-        print("No scanner peripheral found. Retrying in 5s...")
-        print("Attach a Plethora scanner block to any side.")
+        print("No Plethora scanner module found. Retrying in 5s...")
+        print("Attach a module container with the scanner module to any side.")
         term.setTextColor(colors.white)
         sleep(5)
-        scanner, scannerName = findScanner()
+        scannerSide = findScannerSide()
     end
     term.setTextColor(colors.green)
-    print("Scanner found: " .. scannerName)
+    print("Scanner found on: " .. scannerSide)
     term.setTextColor(colors.white)
     print("Base position: " .. BASE_POS.x .. ", " .. BASE_POS.y .. ", " .. BASE_POS.z)
     print("(Edit BASE_POS at the top of this file if incorrect)")
@@ -156,21 +143,25 @@ local function main()
     local failures = 0
 
     while true do
-        -- Re-find scanner if it disconnected
-        if not scanner then
-            scanner, scannerName = findScanner()
+        -- Re-find scanner if it went away
+        if not scannerSide then
+            scannerSide = findScannerSide()
         end
 
-        local blocks = scanner and collectBlocks(scanner) or {}
-        if not blocks then
-            scanner = nil  -- scanner errored; will re-find next loop
-            blocks = {}
+        local blocks = {}
+        if scannerSide then
+            local result = collectBlocks(scannerSide)
+            if result then
+                blocks = result
+            else
+                scannerSide = nil  -- errored; redetect next loop
+            end
         end
 
         local payload = {
             base_pos     = BASE_POS,
             block_delta  = blocks,
-            scanner_name = scannerName or "",
+            scanner_side = scannerSide or "",
         }
 
         local resp = postJSON(pollUrl, payload)

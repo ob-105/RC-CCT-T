@@ -118,20 +118,21 @@ local function flushDirty()
 end
 
 -- ── Scanner integration ───────────────────────────────────────────────────────
--- Finds a Plethora scanner peripheral attached to or equipped on the turtle.
-local function findScanner()
+-- The scanner is a MODULE inside a Plethora module container (manipulator /
+-- neural interface), not a peripheral type itself.  We detect it by calling
+-- listModules() on every attached peripheral and looking for "plethora:scanner".
+-- Returns the side/name string to pass to peripheral.call(), or nil.
+local function findScannerSide()
+    local toCheck = {"left", "right", "top", "bottom", "front", "back"}
     for _, name in ipairs(peripheral.getNames()) do
-        if peripheral.hasType(name, "plethora:scanner") then
-            return peripheral.wrap(name)
-        end
+        toCheck[#toCheck + 1] = name
     end
-    -- Also check equipped sides
-    for _, side in ipairs({"left", "right"}) do
-        local ok, mods = pcall(peripheral.call, side, "listModules")
+    for _, loc in ipairs(toCheck) do
+        local ok, mods = pcall(peripheral.call, loc, "listModules")
         if ok and type(mods) == "table" then
             for _, m in ipairs(mods) do
                 if m == "plethora:scanner" then
-                    return peripheral.wrap(side)
+                    return loc
                 end
             end
         end
@@ -139,25 +140,25 @@ local function findScanner()
     return nil
 end
 
-local cachedScanner = nil
+local cachedScannerSide = nil
 local scannerChecked = false
 
-local function getScanner()
+local function getScannerSide()
     if not scannerChecked then
-        cachedScanner = findScanner()
+        cachedScannerSide = findScannerSide()
         scannerChecked = true
     end
-    return cachedScanner
+    return cachedScannerSide
 end
 
 -- Run a full scan and update the world map using absolute coordinates.
 -- The scanner returns world-axis-aligned offsets so we just add turtle pos.
 local function runScanner()
-    local scanner = getScanner()
-    if not scanner then return false end
-    local ok, blocks = pcall(scanner.scan, 8)
+    local side = getScannerSide()
+    if not side then return false end
+    local ok, blocks = pcall(peripheral.call, side, "scan", 8)
     if not ok or type(blocks) ~= "table" then
-        cachedScanner = nil; scannerChecked = false  -- redetect next time
+        cachedScannerSide = nil; scannerChecked = false  -- redetect next time
         return false
     end
     for _, b in ipairs(blocks) do
@@ -314,8 +315,8 @@ local function executeCommand(cmd)
     elseif action == "select" then
         if cmd.slot then ok = turtle.select(cmd.slot) end
 
-    elseif action == "equipLeft"  then ok = turtle.equipLeft();  scannerChecked = false
-    elseif action == "equipRight" then ok = turtle.equipRight(); scannerChecked = false
+    elseif action == "equipLeft"  then ok = turtle.equipLeft();  cachedScannerSide = nil; scannerChecked = false
+    elseif action == "equipRight" then ok = turtle.equipRight(); cachedScannerSide = nil; scannerChecked = false
 
     elseif action == "refuel" then
         ok = turtle.refuel(cmd.count or 64)
@@ -349,7 +350,7 @@ local function buildStatus()
         last_result   = lastResult,
         block_delta   = flushDirty(),
         map_size      = mapSize,
-        has_scanner   = getScanner() ~= nil,
+        has_scanner   = getScannerSide() ~= nil,
     }
 end
 
@@ -381,8 +382,8 @@ local function main()
     end
     term.setTextColor(colors.green)
     print("Server: " .. serverUrl)
-    if getScanner() then
-        print("Scanner module detected!")
+    if getScannerSide() then
+        print("Scanner module detected on: " .. getScannerSide())
     end
     term.setTextColor(colors.white)
 

@@ -264,6 +264,8 @@
         <div class="stat-row"><span class="stat-label">Position</span><span class="stat-value" id="pos-val">—</span></div>
         <div class="stat-row"><span class="stat-label">Facing</span><span class="stat-value" id="facing-val">—</span></div>
         <div class="stat-row"><span class="stat-label">Slot</span><span class="stat-value" id="slot-val">—</span></div>
+        <div class="stat-row"><span class="stat-label">Map blocks</span><span class="stat-value" id="map-size-val">—</span></div>
+        <div class="stat-row"><span class="stat-label">Scanner</span><span class="stat-value" id="scanner-val">—</span></div>
       </div>
     </div>
 
@@ -503,16 +505,22 @@ function blockColor(name) {
   return 0x999999;
 }
 
-function rebuildBlocks(scanData) {
+// Rebuild block meshes from world-map data.
+// Blocks are in world coords; we render them relative to the turtle (which stays at 0,0,0).
+let turtleWorldPos = { x: 0, y: 0, z: 0 };
+
+function rebuildBlocks(worldBlocks) {
   blockMeshes.forEach(m => blockGroup.remove(m));
   blockMeshes = [];
-  if (!scanData) return;
-  for (const b of scanData) {
+  if (!worldBlocks) return;
+  const tx = turtleWorldPos.x, ty = turtleWorldPos.y, tz = turtleWorldPos.z;
+  for (const b of worldBlocks) {
     if (!b || b.air) continue;
     const col = blockColor(b.name);
     if (col === null) continue;
     const mesh = new THREE.Mesh(blockGeo, getMat(col));
-    mesh.position.set(b.x, b.y, b.z);
+    // Render relative to turtle so turtle stays centred in the scene
+    mesh.position.set(b.x - tx, b.y - ty, b.z - tz);
     blockGroup.add(mesh);
     blockMeshes.push(mesh);
   }
@@ -550,6 +558,16 @@ new ResizeObserver(resizeRenderer).observe(wrap);
   renderer.render(scene, camera);
 })();
 
+// ── World map polling (separate from state, less frequent) ────────────────────
+async function pollWorldMap() {
+  try {
+    const r = await fetch('/api/worldmap');
+    if (!r.ok) return;
+    const blocks = await r.json();
+    rebuildBlocks(blocks);
+  } catch (_) {}
+}
+
 // ── State polling ─────────────────────────────────────────────────────────────
 let lastFacing = 'north';
 
@@ -586,15 +604,22 @@ function applyState(s) {
   document.getElementById('facing-val').textContent = t.facing || '—';
   document.getElementById('slot-val').textContent = t.selected_slot ?? '—';
 
+  // Keep turtle world pos in sync so rebuildBlocks renders correctly
+  turtleWorldPos = { x: p.x ?? 0, y: p.y ?? 0, z: p.z ?? 0 };
+
+  // Show map stats
+  const mapEl = document.getElementById('map-size-val');
+  if (mapEl) mapEl.textContent = s.world_map_size ?? '—';
+  const scanEl = document.getElementById('scanner-val');
+  if (scanEl) scanEl.textContent = t.has_scanner ? 'Yes' : 'No';
+
   // 3D view: update arrow if facing changed
   if (t.facing && t.facing !== lastFacing) {
     lastFacing = t.facing;
     updateArrow(t.facing);
     document.getElementById('facing-label').textContent = `Facing: ${t.facing}`;
   }
-
-  // Scan data → blocks
-  rebuildBlocks(t.scan || []);
+  // Note: blocks are refreshed by pollWorldMap(), not here
 
   // Surroundings
   const surr = t.surroundings || {};
@@ -756,7 +781,9 @@ document.addEventListener('keyup', e => {
 
 // ── Start polling ─────────────────────────────────────────────────────────────
 setInterval(pollState, 500);
+setInterval(pollWorldMap, 1500);   // world map refreshes every 1.5s
 pollState();
+pollWorldMap();
 </script>
 </body>
 </html>

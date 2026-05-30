@@ -38,7 +38,8 @@ _state: dict[str, Any] = {
         "connected": False,
         "last_seen": 0.0,
         "base_pos": {"x": 0, "y": 0, "z": 0},
-        "scanner_name": "",
+        "entities": [],
+        "player": {},
     },
 }
 
@@ -82,7 +83,8 @@ def turtle_poll():
         for key in (
             "position", "facing", "fuel", "fuel_limit",
             "inventory", "selected_slot", "surroundings",
-            "last_result", "map_size", "has_scanner",
+            "entities", "last_result", "map_size",
+            "has_scanner", "has_sensor",
         ):
             if key in data:
                 _state["turtle"][key] = data[key]
@@ -107,10 +109,10 @@ def base_poll():
 
         if "base_pos" in data:
             _state["base"]["base_pos"] = data["base_pos"]
-        if "scanner_side" in data:
-            _state["base"]["scanner_side"] = data["scanner_side"]
-        if "players" in data:
-            _state["base"]["players"] = data["players"]
+        if "entities" in data:
+            _state["base"]["entities"] = data["entities"]
+        if "player" in data:
+            _state["base"]["player"] = data["player"]
 
         if "block_delta" in data and isinstance(data["block_delta"], list):
             _merge_block_delta(data["block_delta"])

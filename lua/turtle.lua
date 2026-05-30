@@ -1,14 +1,16 @@
--- RC-CCT-T  Turtle client  v2.0
--- Polls a Python control server whose URL is published to GitHub.
--- Builds a persistent world map using inspect() after each move
--- and the Plethora scanner module if one is equipped/attached.
+-- RC-CCT-T  Turtle client  v3.0
+-- Uses the Plethora `modules` global (turtle inventory modules).
+-- Place module items in the turtle's inventory and reboot to activate them.
+--
+-- Supported modules (all optional — turtle works without any):
+--   plethora:scanner  → modules.scan(radius)   for full area block mapping
+--   plethora:sensor   → modules.sense(radius)  for nearby entity detection
 
-local GITHUB_API    = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
-local POLL_SECS     = 0.5   -- how often to poll the server
-local URL_TIMEOUT   = 10    -- seconds between GitHub re-checks on failure
-local SCAN_EVERY    = 4     -- run full scanner every N polls (~2s). Scanner travels
-                            -- with the turtle so scan frequently as it moves.
-local MAP_MAX       = 8000  -- max blocks to keep in world map before pruning
+local GITHUB_API  = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
+local POLL_SECS   = 0.5
+local URL_TIMEOUT = 10
+local SCAN_EVERY  = 4     -- full scan every N polls (~2s) if scanner available
+local MAP_MAX     = 8000
 
 -- ── Base-64 decoder ───────────────────────────────────────────────────────────
 local function b64decode(data)
@@ -32,73 +34,77 @@ end
 
 -- ── GitHub URL fetch ──────────────────────────────────────────────────────────
 local function fetchServerUrl()
-    print("[DBG] HTTP GET " .. GITHUB_API)
+    print("[DBG] GET " .. GITHUB_API)
     local ok, resp = pcall(http.get, GITHUB_API, {
         ["Accept"]     = "application/vnd.github.v3+json",
-        ["User-Agent"] = "CC-Turtle/2.0",
+        ["User-Agent"] = "CC-Turtle/3.0",
     })
-    if not ok then
-        print("[DBG] pcall failed: " .. tostring(resp))
-        return nil
-    end
-    if not resp then
-        print("[DBG] http.get returned nil (HTTP disabled or network error)")
-        return nil
-    end
+    if not ok  then print("[DBG] pcall err: " .. tostring(resp)); return nil end
+    if not resp then print("[DBG] http.get=nil"); return nil end
     local status = resp.getResponseCode and resp.getResponseCode() or "?"
-    print("[DBG] HTTP status: " .. tostring(status))
+    print("[DBG] status=" .. tostring(status))
     local body = resp.readAll(); resp.close()
-    print("[DBG] Body length: " .. #body .. " chars")
-    if #body < 10 then
-        print("[DBG] Body: " .. body)
-        return nil
-    end
+    print("[DBG] body len=" .. #body)
     local data = textutils.unserializeJSON(body)
-    if not data then
-        print("[DBG] JSON parse failed. First 80 chars: " .. body:sub(1,80))
-        return nil
-    end
+    if not data then print("[DBG] JSON fail: " .. body:sub(1, 80)); return nil end
     if not data.content then
-        local msg = data.message or "(no message field)"
-        print("[DBG] No 'content' in response. message=" .. tostring(msg))
-        return nil
+        print("[DBG] no content, msg=" .. tostring(data.message)); return nil
     end
-    print("[DBG] b64 content length: " .. #data.content)
     local url = b64decode(data.content):gsub("%s+", "")
-    print("[DBG] Decoded URL (" .. #url .. " chars): " .. url)
+    print("[DBG] url=" .. url .. " (len=" .. #url .. ")")
     return url ~= "" and url or nil
+end
+
+-- ── Module availability ───────────────────────────────────────────────────────
+-- The `modules` global is set by Plethora at boot if module items are in the
+-- turtle's inventory.  Each method listed in modules.listMethods().loaded is
+-- safe to call.
+local loadedMethods = {}
+
+local function initModules()
+    if not modules then
+        print("(No Plethora modules found — place items in inventory and reboot)")
+        return
+    end
+    local ok, info = pcall(modules.listMethods)
+    if ok and type(info) == "table" and type(info.loaded) == "table" then
+        for _, m in ipairs(info.loaded) do
+            loadedMethods[m] = true
+        end
+        print("Modules loaded: " .. textutils.serialize(info.loaded))
+    else
+        -- Older build: probe directly
+        for _, m in ipairs({"scan", "sense", "fire"}) do
+            if modules[m] then loadedMethods[m] = true end
+        end
+    end
+end
+
+local function hasMethod(name)
+    return loadedMethods[name] == true
 end
 
 -- ── Position / facing tracking ────────────────────────────────────────────────
 local pos    = { x = 0, y = 0, z = 0 }
-local facing = 0   -- 0=north 1=east 2=south 3=west
+local facing = 0   -- 0=north  1=east  2=south  3=west
 local FACING_NAMES = { [0]="north", [1]="east", [2]="south", [3]="west" }
 local DX = { [0]=0,  [1]=1,  [2]=0,  [3]=-1 }
 local DZ = { [0]=-1, [1]=0,  [2]=1,  [3]=0  }
 
--- Forward-facing delta as {dx,dz} for inspect-based block placement
 local function frontDelta()
     return DX[facing], DZ[facing]
 end
 
 -- ── World map ─────────────────────────────────────────────────────────────────
--- Persistent record of known blocks in absolute coords.
--- Key: "x,y,z"  Value: {name=string, x=int, y=int, z=int}
--- Air blocks are simply absent from the map.
-local worldMap   = {}
-local dirtyBlocks = {}   -- blocks changed since last poll (sent as delta)
-local mapSize    = 0
+local worldMap    = {}
+local dirtyBlocks = {}
+local mapSize     = 0
 
-local function mapKey(x, y, z)
-    return x .. "," .. y .. "," .. z
-end
+local function mapKey(x, y, z) return x .. "," .. y .. "," .. z end
 
--- Record a block at world position (wx, wy, wz).
--- name=nil means the position is known-air (remove from map).
 local function setBlock(wx, wy, wz, name)
-    local key = mapKey(wx, wy, wz)
-    local isAir = not name or name == "" or name:find(":air")
-
+    local key   = mapKey(wx, wy, wz)
+    local isAir = not name or name == "" or name == "minecraft:air" or name:find(":air$")
     if isAir then
         if worldMap[key] then
             worldMap[key] = nil
@@ -109,13 +115,12 @@ local function setBlock(wx, wy, wz, name)
         local existing = worldMap[key]
         if not existing or existing.name ~= name then
             if not existing then mapSize = mapSize + 1 end
-            worldMap[key] = { name = name, x = wx, y = wy, z = wz }
+            worldMap[key]    = { name = name, x = wx, y = wy, z = wz }
             dirtyBlocks[key] = worldMap[key]
         end
     end
 end
 
--- Prune the map when it gets too large: remove blocks furthest from turtle.
 local function pruneMap()
     if mapSize <= MAP_MAX then return end
     local entries = {}
@@ -133,84 +138,52 @@ local function pruneMap()
     end
 end
 
--- Collect and clear the dirty set, returning it as an array.
 local function flushDirty()
     local out = {}
-    for _, v in pairs(dirtyBlocks) do
-        out[#out + 1] = v
-    end
+    for _, v in pairs(dirtyBlocks) do out[#out + 1] = v end
     dirtyBlocks = {}
     return out
 end
 
--- ── Scanner integration (Advanced Peripherals Geo Scanner) ───────────────────
--- The AP Geo Scanner is an equippable peripheral item (like a modem/speaker).
--- Equip it into the turtle's left or right slot with turtle.equipLeft/Right(),
--- then it appears as a peripheral on that side and travels with the turtle.
--- peripheral.find("geoScanner") checks all sides automatically.
-local function findScanner()
-    -- Check equipped slots first (left/right) then fall back to general find
-    for _, side in ipairs({"left", "right"}) do
-        if peripheral.getType(side) == "geoScanner" then
-            return peripheral.wrap(side)
-        end
-    end
-    -- peripheral.find covers all sides + modem-connected peripherals
-    local p = peripheral.find("geoScanner")
-    if p then return p end
-    return nil
-end
-
-local cachedScanner  = nil
-local scannerChecked = false
-
-local function getScanner()
-    if not scannerChecked then
-        cachedScanner  = findScanner()
-        scannerChecked = true
-        if cachedScanner then
-            print("[DBG] Geo Scanner found")
-        end
-    end
-    return cachedScanner
-end
-
--- Run a full scan and update the world map using absolute coordinates.
--- AP Geo Scanner returns world-axis-aligned offsets — just add turtle pos.
+-- ── Scanner (modules.scan) ────────────────────────────────────────────────────
+-- modules.scan() returns world-axis-aligned offsets — just add turtle pos.
 local function runScanner()
-    local scanner = getScanner()
-    if not scanner then return false end
-    local ok, blocks = pcall(scanner.scan, 8)
+    if not hasMethod("scan") then return false end
+    local ok, blocks = pcall(modules.scan, 8)
     if not ok or type(blocks) ~= "table" then
-        print("[DBG] scan() failed: " .. tostring(blocks))
-        cachedScanner = nil; scannerChecked = false
+        print("[DBG] modules.scan error: " .. tostring(blocks))
         return false
     end
     for _, b in ipairs(blocks) do
-        local name = b.name or ""
-        local isAir = name == "" or name == "minecraft:air" or name:find(":air$")
+        local name  = b.name or ""
+        local isAir = b.air or name == "" or name == "minecraft:air" or name:find(":air$")
         setBlock(pos.x + b.x, pos.y + b.y, pos.z + b.z, isAir and nil or name)
     end
     pruneMap()
     return true
 end
 
--- ── Inspect-based mapping ─────────────────────────────────────────────────────
--- After each move, inspect what's adjacent and record it.
-local function inspectAround()
-    -- Position turtle is at = air
-    setBlock(pos.x, pos.y, pos.z, nil)
+-- ── Sensor (modules.sense) ────────────────────────────────────────────────────
+local lastEntities = {}
 
-    -- Front
+local function runSensor()
+    if not hasMethod("sense") then return end
+    local ok, entities = pcall(modules.sense, 16)
+    if not ok or type(entities) ~= "table" then return end
+    lastEntities = entities
+end
+
+-- ── Inspect-based mapping (no scanner needed) ─────────────────────────────────
+local function inspectAround()
+    setBlock(pos.x, pos.y, pos.z, nil)   -- turtle's own position is always air
+
     local fdx, fdz = frontDelta()
     local ok, data = turtle.inspect()
     setBlock(pos.x + fdx, pos.y, pos.z + fdz, ok and data.name or nil)
 
-    -- Above
     ok, data = turtle.inspectUp()
     setBlock(pos.x, pos.y + 1, pos.z, ok and data.name or nil)
 
-    -- Below
     ok, data = turtle.inspectDown()
     setBlock(pos.x, pos.y - 1, pos.z, ok and data.name or nil)
 end
@@ -230,7 +203,7 @@ local function getInventory()
     return inv
 end
 
--- ── Surroundings (for live display in UI) ────────────────────────────────────
+-- ── Surroundings ──────────────────────────────────────────────────────────────
 local function getSurroundings()
     local function insp(fn)
         local ok, d = fn(); return ok and d or nil
@@ -250,88 +223,70 @@ local function executeCommand(cmd)
     local ok, result = false, nil
 
     if action == "forward" then
-        local oldPos = {x=pos.x, y=pos.y, z=pos.z}
+        local old = {x=pos.x, y=pos.y, z=pos.z}
         ok, result = turtle.forward()
         if ok then
-            pos.x = pos.x + DX[facing]
-            pos.z = pos.z + DZ[facing]
-            setBlock(oldPos.x, oldPos.y, oldPos.z, nil)  -- old pos = air
+            pos.x = pos.x + DX[facing]; pos.z = pos.z + DZ[facing]
+            setBlock(old.x, old.y, old.z, nil)
             inspectAround()
         end
-
     elseif action == "back" then
-        local oldPos = {x=pos.x, y=pos.y, z=pos.z}
+        local old = {x=pos.x, y=pos.y, z=pos.z}
         ok, result = turtle.back()
         if ok then
-            pos.x = pos.x - DX[facing]
-            pos.z = pos.z - DZ[facing]
-            setBlock(oldPos.x, oldPos.y, oldPos.z, nil)
+            pos.x = pos.x - DX[facing]; pos.z = pos.z - DZ[facing]
+            setBlock(old.x, old.y, old.z, nil)
             inspectAround()
         end
-
     elseif action == "up" then
-        local oldPos = {x=pos.x, y=pos.y, z=pos.z}
+        local old = {x=pos.x, y=pos.y, z=pos.z}
         ok, result = turtle.up()
         if ok then
             pos.y = pos.y + 1
-            setBlock(oldPos.x, oldPos.y, oldPos.z, nil)
+            setBlock(old.x, old.y, old.z, nil)
             inspectAround()
         end
-
     elseif action == "down" then
-        local oldPos = {x=pos.x, y=pos.y, z=pos.z}
+        local old = {x=pos.x, y=pos.y, z=pos.z}
         ok, result = turtle.down()
         if ok then
             pos.y = pos.y - 1
-            setBlock(oldPos.x, oldPos.y, oldPos.z, nil)
+            setBlock(old.x, old.y, old.z, nil)
             inspectAround()
         end
-
     elseif action == "turnLeft" then
         ok = turtle.turnLeft()
-        if ok then
-            facing = (facing - 1) % 4
-            inspectAround()  -- front changed after turning
-        end
-
+        if ok then facing = (facing - 1) % 4; inspectAround() end
     elseif action == "turnRight" then
         ok = turtle.turnRight()
-        if ok then
-            facing = (facing + 1) % 4
-            inspectAround()
-        end
+        if ok then facing = (facing + 1) % 4; inspectAround() end
 
-    elseif action == "dig" then
+    elseif action == "dig"      then
         ok, result = turtle.dig()
         if ok then
             local fdx, fdz = frontDelta()
-            setBlock(pos.x + fdx, pos.y, pos.z + fdz, nil)  -- block is now gone
+            setBlock(pos.x + fdx, pos.y, pos.z + fdz, nil)
         end
-
-    elseif action == "digUp" then
+    elseif action == "digUp"    then
         ok, result = turtle.digUp()
         if ok then setBlock(pos.x, pos.y + 1, pos.z, nil) end
-
-    elseif action == "digDown" then
+    elseif action == "digDown"  then
         ok, result = turtle.digDown()
         if ok then setBlock(pos.x, pos.y - 1, pos.z, nil) end
 
-    elseif action == "place" then
+    elseif action == "place"    then
         ok, result = turtle.place()
         if ok then
             local fdx, fdz = frontDelta()
-            -- We don't know the placed block name here without detail; re-inspect
             local iok, idata = turtle.inspect()
             setBlock(pos.x + fdx, pos.y, pos.z + fdz, iok and idata.name or nil)
         end
-
-    elseif action == "placeUp" then
+    elseif action == "placeUp"  then
         ok, result = turtle.placeUp()
         if ok then
             local iok, idata = turtle.inspectUp()
             setBlock(pos.x, pos.y + 1, pos.z, iok and idata.name or nil)
         end
-
     elseif action == "placeDown" then
         ok, result = turtle.placeDown()
         if ok then
@@ -339,23 +294,23 @@ local function executeCommand(cmd)
             setBlock(pos.x, pos.y - 1, pos.z, iok and idata.name or nil)
         end
 
-    elseif action == "select" then
-        if cmd.slot then ok = turtle.select(cmd.slot) end
+    elseif action == "select"    then if cmd.slot then ok = turtle.select(cmd.slot) end
+    elseif action == "equipLeft" then
+        ok = turtle.equipLeft()
+        if ok then initModules() end   -- re-check modules after equip change
+    elseif action == "equipRight" then
+        ok = turtle.equipRight()
+        if ok then initModules() end
 
-    elseif action == "equipLeft"  then ok = turtle.equipLeft();  cachedScanner = nil; scannerChecked = false
-    elseif action == "equipRight" then ok = turtle.equipRight(); cachedScanner = nil; scannerChecked = false
-
-    elseif action == "refuel" then
+    elseif action == "refuel"   then
         ok = turtle.refuel(cmd.count or 64)
         result = tostring(turtle.getFuelLevel())
-
-    elseif action == "drop"      then ok, result = turtle.drop(cmd.count)
-    elseif action == "dropUp"    then ok, result = turtle.dropUp(cmd.count)
-    elseif action == "dropDown"  then ok, result = turtle.dropDown(cmd.count)
-    elseif action == "suck"      then ok, result = turtle.suck(cmd.count)
-    elseif action == "suckUp"    then ok, result = turtle.suckUp(cmd.count)
-    elseif action == "suckDown"  then ok, result = turtle.suckDown(cmd.count)
-
+    elseif action == "drop"     then ok, result = turtle.drop(cmd.count)
+    elseif action == "dropUp"   then ok, result = turtle.dropUp(cmd.count)
+    elseif action == "dropDown" then ok, result = turtle.dropDown(cmd.count)
+    elseif action == "suck"     then ok, result = turtle.suck(cmd.count)
+    elseif action == "suckUp"   then ok, result = turtle.suckUp(cmd.count)
+    elseif action == "suckDown" then ok, result = turtle.suckDown(cmd.count)
     else
         ok, result = false, "unknown action: " .. tostring(action)
     end
@@ -374,39 +329,39 @@ local function buildStatus()
         inventory     = getInventory(),
         selected_slot = turtle.getSelectedSlot(),
         surroundings  = getSurroundings(),
+        entities      = lastEntities,
         last_result   = lastResult,
         block_delta   = flushDirty(),
         map_size      = mapSize,
-        has_scanner   = getScanner() ~= nil,
+        has_scanner   = hasMethod("scan"),
+        has_sensor    = hasMethod("sense"),
     }
 end
 
--- ── HTTP helpers ──────────────────────────────────────────────────────────────
+-- ── HTTP POST helper ──────────────────────────────────────────────────────────
 local function postJSON(url, data)
     local body = textutils.serializeJSON(data)
     local ok, resp = pcall(http.post, url, body, {["Content-Type"] = "application/json"})
-    if not ok then
-        print("[DBG] POST pcall error: " .. tostring(resp))
-        return nil
-    end
-    if not resp then
-        print("[DBG] POST returned nil (server down or URL wrong?)")
-        return nil
-    end
+    if not ok  then print("[DBG] POST err: " .. tostring(resp)); return nil end
+    if not resp then print("[DBG] POST=nil"); return nil end
     local status = resp.getResponseCode and resp.getResponseCode() or "?"
-    if status ~= 200 then
-        print("[DBG] POST status: " .. tostring(status))
-    end
+    if status ~= 200 then print("[DBG] POST status=" .. tostring(status)) end
     local text = resp.readAll(); resp.close()
     return textutils.unserializeJSON(text)
 end
 
--- ── Main loop ─────────────────────────────────────────────────────────────────
+-- ── Main ──────────────────────────────────────────────────────────────────────
 local function main()
     term.setTextColor(colors.cyan)
-    print("RC-CCT-T Turtle v2.0")
+    print("RC-CCT-T Turtle v3.0")
     term.setTextColor(colors.white)
 
+    initModules()
+
+    -- Seed the map with what's immediately around us
+    inspectAround()
+
+    -- Discover server URL
     local serverUrl = nil
     while not serverUrl do
         term.setTextColor(colors.yellow)
@@ -414,41 +369,28 @@ local function main()
         term.setTextColor(colors.white)
         serverUrl = fetchServerUrl()
         if not serverUrl then
-            print("Not found — retrying in " .. URL_TIMEOUT .. "s")
+            print("Retrying in " .. URL_TIMEOUT .. "s")
             sleep(URL_TIMEOUT)
         end
     end
     term.setTextColor(colors.green)
     print("Server: " .. serverUrl)
-    if getScanner() then
-        print("Geo Scanner detected!")
-    else
-        print("(No Geo Scanner found — using inspect() only)")
-    end
     term.setTextColor(colors.white)
 
-    -- Initial inspect to seed the map around starting position
-    inspectAround()
-
-    local pollUrl  = serverUrl .. "/api/turtle/poll"
-    print("[DBG] Poll URL: " .. pollUrl)
+    local pollUrl   = serverUrl .. "/api/turtle/poll"
     local pollCount = 0
-    local failures = 0
+    local failures  = 0
 
     while true do
         pollCount = pollCount + 1
 
-        -- Periodic full scanner sweep
+        -- Periodic full scanner + sensor sweep
         if pollCount % SCAN_EVERY == 0 then
             runScanner()
-            pruneMap()
+            runSensor()
         end
 
         local status = buildStatus()
-        local ok_build, err_build = pcall(function() return textutils.serializeJSON(status) end)
-        if not ok_build then
-            print("[DBG] buildStatus serialization error: " .. tostring(err_build))
-        end
         local resp   = postJSON(pollUrl, status)
 
         if resp then
@@ -461,9 +403,7 @@ local function main()
             term.setTextColor(colors.red)
             print("Server unreachable (" .. failures .. ")")
             term.setTextColor(colors.white)
-
             if failures >= 3 then
-                print("Re-checking GitHub...")
                 local newUrl = fetchServerUrl()
                 if newUrl and newUrl ~= serverUrl then
                     serverUrl = newUrl

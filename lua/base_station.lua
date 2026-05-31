@@ -10,6 +10,7 @@
 -- Set BASE_POS to this computer's in-game coordinates (F3 → XYZ).
 
 local GITHUB_API  = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
+local SELF_API    = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/lua/base_station.lua"
 local POLL_SECS   = 3
 local URL_TIMEOUT = 10
 local SCAN_RADIUS = 8
@@ -36,6 +37,48 @@ local function b64decode(data)
         for i = 1, 8 do c = c + (tonumber(x:sub(i, i)) * 2 ^ (8 - i)) end
         return string.char(c)
     end))
+end
+
+-- ── Self-updater ─────────────────────────────────────────────────────────────
+local function selfUpdate()
+    term.setTextColor(colors.yellow)
+    print("Checking for updates...")
+    term.setTextColor(colors.white)
+
+    local ok, resp = pcall(http.get, SELF_API, {
+        ["Accept"]     = "application/vnd.github.v3+json",
+        ["User-Agent"] = "CC-BaseStation/3.0",
+    })
+    if not ok or not resp then print("(Update check failed — continuing)"); return end
+    local body = resp.readAll(); resp.close()
+    local data = textutils.unserializeJSON(body)
+    if not data or not data.content then print("(Update: bad response — continuing)"); return end
+
+    local latest = b64decode(data.content)
+    if #latest < 50 then print("(Update: suspiciously short — skipping)"); return end
+
+    local selfPath = shell.getRunningProgram()
+    local f = fs.open(selfPath, "r")
+    local current = f and f.readAll() or ""
+    if f then f.close() end
+
+    if latest == current then
+        term.setTextColor(colors.green)
+        print("Already up to date.")
+        term.setTextColor(colors.white)
+        return
+    end
+
+    print("Update found! Writing new version...")
+    local wf = fs.open(selfPath, "w")
+    if not wf then print("(Cannot write update)"); return end
+    wf.write(latest)
+    wf.close()
+    term.setTextColor(colors.green)
+    print("Updated! Rebooting in 2s...")
+    term.setTextColor(colors.white)
+    sleep(2)
+    os.reboot()
 end
 
 -- ── GitHub URL fetch ──────────────────────────────────────────────────────────
@@ -185,6 +228,9 @@ local function main()
     term.setTextColor(colors.cyan)
     print("RC-CCT-T Base Station v3.0")
     term.setTextColor(colors.white)
+
+    selfUpdate()   -- check GitHub for a newer version first; reboots if updated
+
     print("Base pos: " .. BASE_POS.x .. ", " .. BASE_POS.y .. ", " .. BASE_POS.z)
 
     -- Find module container

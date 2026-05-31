@@ -62,6 +62,7 @@ end
 local loadedMethods = {}
 
 local function initModules()
+    loadedMethods = {}
     if not modules then
         print("(No Plethora modules found — place items in inventory and reboot)")
         return
@@ -73,9 +74,16 @@ local function initModules()
         end
         print("Modules loaded: " .. textutils.serialize(info.loaded))
     else
-        -- Older build: probe directly
-        for _, m in ipairs({"scan", "sense", "fire"}) do
-            if modules[m] then loadedMethods[m] = true end
+        -- Probe directly for known methods
+        for _, m in ipairs({"scan", "sense", "fire", "getRotation"}) do
+            if type(modules[m]) == "function" then loadedMethods[m] = true end
+        end
+    end
+    -- getRotation is exposed with sensor OR introspection — probe separately
+    -- in case listMethods didn't include it
+    if not loadedMethods["getRotation"] and type(modules) == "table" then
+        if type(modules.getRotation) == "function" then
+            loadedMethods["getRotation"] = true
         end
     end
 end
@@ -93,6 +101,31 @@ local DZ = { [0]=-1, [1]=0,  [2]=1,  [3]=0  }
 
 local function frontDelta()
     return DX[facing], DZ[facing]
+end
+
+-- Convert Minecraft yaw degrees to our facing enum.
+-- MC yaw: 0=south, 90=west, 180/-180=north, -90/270=east
+local function yawToFacing(yaw)
+    yaw = yaw % 360
+    if yaw < 0 then yaw = yaw + 360 end
+    if     yaw >= 315 or yaw < 45  then return 2  -- south
+    elseif yaw >= 45  and yaw < 135 then return 3  -- west
+    elseif yaw >= 135 and yaw < 225 then return 0  -- north
+    else                                 return 1  -- east (225-315)
+    end
+end
+
+-- Sync facing from real yaw — call after every turn to prevent drift.
+local function syncFacing()
+    if not hasMethod("getRotation") then return end
+    local ok, yaw = pcall(modules.getRotation)
+    if ok and type(yaw) == "number" then
+        local real = yawToFacing(yaw)
+        if real ~= facing then
+            print("[DBG] Facing corrected " .. FACING_NAMES[facing] .. " → " .. FACING_NAMES[real])
+            facing = real
+        end
+    end
 end
 
 -- ── World map ─────────────────────────────────────────────────────────────────
@@ -215,6 +248,12 @@ local function getSurroundings()
     }
 end
 
+-- ── Peripheral slot tracking ──────────────────────────────────────────────────
+-- CC has no read API for what's equipped, so we track it ourselves.
+-- Both start nil (unknown) until an equip command is issued this session.
+local equippedLeft  = nil
+local equippedRight = nil
+
 -- ── Command execution ─────────────────────────────────────────────────────────
 local lastResult = nil
 
@@ -256,10 +295,18 @@ local function executeCommand(cmd)
         end
     elseif action == "turnLeft" then
         ok = turtle.turnLeft()
-        if ok then facing = (facing - 1) % 4; inspectAround() end
+        if ok then
+            facing = (facing - 1) % 4
+            syncFacing()   -- correct any drift against real yaw
+            inspectAround()
+        end
     elseif action == "turnRight" then
         ok = turtle.turnRight()
-        if ok then facing = (facing + 1) % 4; inspectAround() end
+        if ok then
+            facing = (facing + 1) % 4
+            syncFacing()
+            inspectAround()
+        end
 
     elseif action == "dig"      then
         ok, result = turtle.dig()
@@ -294,13 +341,41 @@ local function executeCommand(cmd)
             setBlock(pos.x, pos.y - 1, pos.z, iok and idata.name or nil)
         end
 
-    elseif action == "select"    then if cmd.slot then ok = turtle.select(cmd.slot) end
+    elseif action == "select" then
+        if cmd.slot then ok = turtle.select(cmd.slot) end
+
     elseif action == "equipLeft" then
+        -- Record what's in the selected slot before equipping
+        local slot = turtle.getSelectedSlot()
+        local incoming = turtle.getItemDetail(slot, false)
         ok = turtle.equipLeft()
-        if ok then initModules() end   -- re-check modules after equip change
+        if ok then
+            -- incoming item is now in the left peripheral slot
+            -- whatever was there before is now in the selected slot
+            local swappedOut = equippedLeft
+            equippedLeft = incoming and {
+                name        = incoming.name,
+                displayName = incoming.displayName or incoming.name,
+                count       = incoming.count,
+            } or nil
+            result = swappedOut and swappedOut.displayName or "empty"
+            initModules()
+        end
+
     elseif action == "equipRight" then
+        local slot = turtle.getSelectedSlot()
+        local incoming = turtle.getItemDetail(slot, false)
         ok = turtle.equipRight()
-        if ok then initModules() end
+        if ok then
+            local swappedOut = equippedRight
+            equippedRight = incoming and {
+                name        = incoming.name,
+                displayName = incoming.displayName or incoming.name,
+                count       = incoming.count,
+            } or nil
+            result = swappedOut and swappedOut.displayName or "empty"
+            initModules()
+        end
 
     elseif action == "refuel"   then
         ok = turtle.refuel(cmd.count or 64)
@@ -335,6 +410,8 @@ local function buildStatus()
         map_size      = mapSize,
         has_scanner   = hasMethod("scan"),
         has_sensor    = hasMethod("sense"),
+        has_rotation  = hasMethod("getRotation"),
+        equipped      = { left = equippedLeft, right = equippedRight },
     }
 end
 

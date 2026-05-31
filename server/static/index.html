@@ -305,10 +305,28 @@
     </div>
 
     <div>
-      <span class="sec-title">Equipment (turtle)</span>
-      <div class="equip-grid" id="turtle-equip">
-        <div class="equip-row"><span class="equip-slot-label">Left</span><div class="equip-slot-value" id="equip-left">—</div></div>
-        <div class="equip-row"><span class="equip-slot-label">Right</span><div class="equip-slot-value" id="equip-right">—</div></div>
+      <span class="sec-title">Peripheral Slots</span>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <div class="equip-row">
+          <span class="equip-slot-label">Left</span>
+          <div class="equip-slot-value" id="equip-left" style="flex:1">?</div>
+          <button class="btn" style="height:22px;font-size:10px;padding:0 6px;margin-left:4px;" onclick="cmd('equipLeft')" title="Equip selected slot → Left">⇐</button>
+        </div>
+        <div class="equip-row">
+          <span class="equip-slot-label">Right</span>
+          <div class="equip-slot-value" id="equip-right" style="flex:1">?</div>
+          <button class="btn" style="height:22px;font-size:10px;padding:0 6px;margin-left:4px;" onclick="cmd('equipRight')" title="Equip selected slot → Right">⇒</button>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px;">
+          Click an inventory slot to select it, then ⇐/⇒ to swap it into that peripheral slot.
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <span class="sec-title">Nearby Entities (turtle)</span>
+      <div class="entity-list" id="turtle-entity-list">
+        <div style="color:var(--muted);font-size:11px">No sensor module</div>
       </div>
     </div>
 
@@ -469,6 +487,87 @@ const surrHighlights = {
 };
 Object.values(surrHighlights).forEach(m => { m.visible = false; scene.add(m); });
 
+// Entity spheres
+const entityGeo = new THREE.SphereGeometry(0.35, 8, 6);
+const ENTITY_MATS = {
+  player:  new THREE.MeshLambertMaterial({ color: 0xffdd00 }),  // yellow
+  hostile: new THREE.MeshLambertMaterial({ color: 0xff4444 }),  // red
+  passive: new THREE.MeshLambertMaterial({ color: 0x66ff66 }),  // green
+  other:   new THREE.MeshLambertMaterial({ color: 0xaaaaff }),  // blue-grey
+};
+const HOSTILE_TYPES = ['zombie','skeleton','creeper','spider','enderman','witch',
+                       'blaze','ghast','phantom','drowned','husk','stray','pillager',
+                       'vindicator','ravager','warden','elder_guardian'];
+const PASSIVE_TYPES = ['cow','pig','sheep','chicken','horse','donkey','cat','wolf',
+                       'rabbit','villager','squid','axolotl','bee','fox','panda'];
+
+function entityMat(type) {
+  if (!type) return ENTITY_MATS.other;
+  const t = type.toLowerCase();
+  if (t.includes('player')) return ENTITY_MATS.player;
+  if (HOSTILE_TYPES.some(h => t.includes(h))) return ENTITY_MATS.hostile;
+  if (PASSIVE_TYPES.some(p => t.includes(p))) return ENTITY_MATS.passive;
+  return ENTITY_MATS.other;
+}
+
+let entityMeshes = [];
+const entityGroup = new THREE.Group();
+scene.add(entityGroup);
+
+// Sprite-style name labels using canvas textures
+function makeLabel(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, 256, 32);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(text.substring(0, 24), 128, 22);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(2, 0.25, 1);
+  return sprite;
+}
+
+function updateEntityMeshes(turtleEntities, baseEntities, turtlePos) {
+  entityMeshes.forEach(m => entityGroup.remove(m));
+  entityMeshes = [];
+
+  const allEntities = [];
+
+  // Turtle sensor entities: coords are already turtle-relative
+  for (const e of (turtleEntities || [])) {
+    allEntities.push({ e, rx: e.x || 0, ry: e.y || 0, rz: e.z || 0 });
+  }
+
+  // Base station entities: server already computed world_x/y/z
+  const tx = turtlePos.x || 0, ty = turtlePos.y || 0, tz = turtlePos.z || 0;
+  for (const e of (baseEntities || [])) {
+    if (e.world_x == null) continue;
+    allEntities.push({
+      e,
+      rx: e.world_x - tx,
+      ry: e.world_y - ty,
+      rz: e.world_z - tz,
+    });
+  }
+
+  for (const { e, rx, ry, rz } of allEntities) {
+    const sphere = new THREE.Mesh(entityGeo, entityMat(e.type));
+    sphere.position.set(rx, ry + 0.35, rz);
+    entityGroup.add(sphere);
+    entityMeshes.push(sphere);
+
+    const label = makeLabel(e.name || e.type || '?');
+    label.position.set(rx, ry + 1.1, rz);
+    entityGroup.add(label);
+    entityMeshes.push(label);
+  }
+}
+
 function getMat(color) {
   if (!matCache.has(color)) matCache.set(color, new THREE.MeshLambertMaterial({ color }));
   return matCache.get(color);
@@ -619,6 +718,9 @@ function applyState(s) {
     updateArrow(t.facing);
     document.getElementById('facing-label').textContent = `Facing: ${t.facing}`;
   }
+  // Entities in 3D scene
+  updateEntityMeshes(t.entities, b.entities, turtleWorldPos);
+
   // Note: blocks are refreshed by pollWorldMap(), not here
 
   // Surroundings
@@ -630,6 +732,31 @@ function applyState(s) {
     surr.up    ? (surr.up.name   || '(air)') : '—';
   document.getElementById('surr-down').textContent =
     surr.down  ? (surr.down.name || '(air)') : '—';
+
+  // Peripheral slot display
+  const eq = t.equipped || {};
+  const elEl = document.getElementById('equip-left');
+  const erEl = document.getElementById('equip-right');
+  if (elEl) elEl.textContent = eq.left  ? shortName(eq.left.displayName  || eq.left.name)  : '?';
+  if (erEl) erEl.textContent = eq.right ? shortName(eq.right.displayName || eq.right.name) : '?';
+
+  // Turtle entity list
+  const tentList = document.getElementById('turtle-entity-list');
+  const tents = t.entities || [];
+  if (tentList) {
+    tentList.innerHTML = tents.length === 0
+      ? `<div style="color:var(--muted);font-size:11px">${t.has_sensor ? 'No entities nearby' : 'No sensor module'}</div>`
+      : tents.slice(0, 15).map(e => {
+          const dist = Math.sqrt((e.x||0)**2 + (e.y||0)**2 + (e.z||0)**2).toFixed(1);
+          const col = e.type && e.type.includes('player') ? 'var(--yellow)'
+                    : HOSTILE_TYPES && HOSTILE_TYPES.some(h => (e.type||'').includes(h)) ? 'var(--red)'
+                    : 'var(--green)';
+          return `<div class="entity-item">
+            <span style="color:${col}">${e.name || e.type || '?'}</span>
+            <span style="color:var(--muted)">${dist}m</span>
+          </div>`;
+        }).join('');
+  }
 
   // Inventory grid
   renderInventory('inv-grid', t.inventory || [], t.selected_slot, true);

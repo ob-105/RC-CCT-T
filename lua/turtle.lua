@@ -6,11 +6,12 @@
 --   plethora:scanner  → modules.scan(radius)   for full area block mapping
 --   plethora:sensor   → modules.sense(radius)  for nearby entity detection
 
-local GITHUB_API  = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
-local POLL_SECS   = 0.5
-local URL_TIMEOUT = 10
-local SCAN_EVERY  = 4     -- full scan every N polls (~2s) if scanner available
-local MAP_MAX     = 8000
+local GITHUB_API    = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/url.txt"
+local SELF_API      = "https://api.github.com/repos/ob-105/RC-CCT-T/contents/lua/turtle.lua"
+local POLL_SECS     = 0.5
+local URL_TIMEOUT   = 10
+local SCAN_EVERY    = 4     -- full scan every N polls (~2s) if scanner available
+local MAP_MAX       = 8000
 
 -- ── Base-64 decoder ───────────────────────────────────────────────────────────
 local function b64decode(data)
@@ -53,6 +54,62 @@ local function fetchServerUrl()
     local url = b64decode(data.content):gsub("%s+", "")
     print("[DBG] url=" .. url .. " (len=" .. #url .. ")")
     return url ~= "" and url or nil
+end
+
+-- ── Self-updater ─────────────────────────────────────────────────────────────
+-- Downloads the latest script from GitHub via the API (no CDN caching) and
+-- overwrites this file + reboots if the content changed.
+local function selfUpdate()
+    term.setTextColor(colors.yellow)
+    print("Checking for updates...")
+    term.setTextColor(colors.white)
+
+    local ok, resp = pcall(http.get, SELF_API, {
+        ["Accept"]     = "application/vnd.github.v3+json",
+        ["User-Agent"] = "CC-Turtle/3.0",
+    })
+    if not ok or not resp then
+        print("(Update check failed — continuing)")
+        return
+    end
+    local body = resp.readAll(); resp.close()
+    local data = textutils.unserializeJSON(body)
+    if not data or not data.content then
+        print("(Update: bad GitHub response — continuing)")
+        return
+    end
+
+    local latest = b64decode(data.content)
+    if #latest < 50 then
+        print("(Update: suspiciously short response — skipping)")
+        return
+    end
+
+    local selfPath = shell.getRunningProgram()
+    local f = fs.open(selfPath, "r")
+    local current = f and f.readAll() or ""
+    if f then f.close() end
+
+    if latest == current then
+        term.setTextColor(colors.green)
+        print("Already up to date.")
+        term.setTextColor(colors.white)
+        return
+    end
+
+    print("Update found! Writing new version...")
+    local wf = fs.open(selfPath, "w")
+    if not wf then
+        print("(Cannot write update — check file permissions)")
+        return
+    end
+    wf.write(latest)
+    wf.close()
+    term.setTextColor(colors.green)
+    print("Updated! Rebooting in 2s...")
+    term.setTextColor(colors.white)
+    sleep(2)
+    os.reboot()
 end
 
 -- ── Module availability ───────────────────────────────────────────────────────
@@ -407,6 +464,12 @@ local function executeCommand(cmd)
     elseif action == "suck"     then ok, result = turtle.suck(cmd.count)
     elseif action == "suckUp"   then ok, result = turtle.suckUp(cmd.count)
     elseif action == "suckDown" then ok, result = turtle.suckDown(cmd.count)
+
+    elseif action == "reboot" then
+        print("Reboot requested by control panel.")
+        sleep(0.5)
+        os.reboot()   -- does not return
+
     else
         ok, result = false, "unknown action: " .. tostring(action)
     end
@@ -453,6 +516,8 @@ local function main()
     term.setTextColor(colors.cyan)
     print("RC-CCT-T Turtle v3.0")
     term.setTextColor(colors.white)
+
+    selfUpdate()   -- check GitHub for a newer version first; reboots if updated
 
     initModules()
 

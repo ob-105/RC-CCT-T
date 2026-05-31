@@ -252,7 +252,6 @@ local function flushDirty()
     end
     -- (remaining dirty entries stay in dirtyBlocks for the next poll)
     return out
-    return out
 end
 
 -- ── Scanner (modules.scan) ────────────────────────────────────────────────────

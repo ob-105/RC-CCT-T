@@ -128,10 +128,20 @@ local function syncFacing()
     end
 end
 
+-- ── Yield helper ─────────────────────────────────────────────────────────────
+-- CC kills scripts that run >~10k instructions without yielding.
+-- This yields instantly (no sleep delay) by firing a synthetic event.
+local function yield()
+    os.queueEvent("__rc_yield")
+    os.pullEvent("__rc_yield")
+end
+
 -- ── World map ─────────────────────────────────────────────────────────────────
 local worldMap    = {}
 local dirtyBlocks = {}
 local mapSize     = 0
+
+local MAX_DELTA_PER_POLL = 400  -- cap dirty blocks sent per poll to bound JSON size
 
 local function mapKey(x, y, z) return x .. "," .. y .. "," .. z end
 
@@ -157,11 +167,14 @@ end
 local function pruneMap()
     if mapSize <= MAP_MAX then return end
     local entries = {}
+    local i = 0
     for _, v in pairs(worldMap) do
+        i = i + 1
         local dx = v.x - pos.x
         local dy = v.y - pos.y
         local dz = v.z - pos.z
         entries[#entries + 1] = { dist = dx*dx + dy*dy + dz*dz, key = mapKey(v.x, v.y, v.z) }
+        if i % 500 == 0 then yield() end   -- yield every 500 iterations
     end
     table.sort(entries, function(a, b) return a.dist > b.dist end)
     local toRemove = mapSize - math.floor(MAP_MAX * 0.8)
@@ -172,9 +185,16 @@ local function pruneMap()
 end
 
 local function flushDirty()
-    local out = {}
-    for _, v in pairs(dirtyBlocks) do out[#out + 1] = v end
-    dirtyBlocks = {}
+    local out   = {}
+    local count = 0
+    for k, v in pairs(dirtyBlocks) do
+        out[#out + 1] = v
+        dirtyBlocks[k] = nil
+        count = count + 1
+        if count >= MAX_DELTA_PER_POLL then break end  -- send the rest next poll
+    end
+    -- (remaining dirty entries stay in dirtyBlocks for the next poll)
+    return out
     return out
 end
 
@@ -187,10 +207,11 @@ local function runScanner()
         print("[DBG] modules.scan error: " .. tostring(blocks))
         return false
     end
-    for _, b in ipairs(blocks) do
+    for i, b in ipairs(blocks) do
         local name  = b.name or ""
         local isAir = b.air or name == "" or name == "minecraft:air" or name:find(":air$")
         setBlock(pos.x + b.x, pos.y + b.y, pos.z + b.z, isAir and nil or name)
+        if i % 250 == 0 then yield() end   -- yield every 250 blocks
     end
     pruneMap()
     return true

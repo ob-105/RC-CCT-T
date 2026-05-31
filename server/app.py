@@ -84,7 +84,7 @@ def turtle_poll():
             "position", "facing", "fuel", "fuel_limit",
             "inventory", "selected_slot", "surroundings",
             "entities", "last_result", "map_size",
-            "has_scanner", "has_sensor",
+            "has_scanner", "has_sensor", "has_rotation", "equipped",
         ):
             if key in data:
                 _state["turtle"][key] = data[key]
@@ -109,10 +109,20 @@ def base_poll():
 
         if "base_pos" in data:
             _state["base"]["base_pos"] = data["base_pos"]
-        if "entities" in data:
-            _state["base"]["entities"] = data["entities"]
         if "player" in data:
             _state["base"]["player"] = data["player"]
+        if "entities" in data:
+            # Annotate with world coordinates so the UI can render them
+            # in the shared 3D scene (world = base_pos + relative offset)
+            bp = data.get("base_pos", _state["base"]["base_pos"])
+            world_ents = []
+            for e in data["entities"]:
+                we = dict(e)
+                we["world_x"] = bp.get("x", 0) + e.get("x", 0)
+                we["world_y"] = bp.get("y", 0) + e.get("y", 0)
+                we["world_z"] = bp.get("z", 0) + e.get("z", 0)
+                world_ents.append(we)
+            _state["base"]["entities"] = world_ents
 
         if "block_delta" in data and isinstance(data["block_delta"], list):
             _merge_block_delta(data["block_delta"])

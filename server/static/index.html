@@ -49,7 +49,12 @@
     padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--btn); color: var(--text); cursor: pointer; font-size: 11px;
   }
-  #clear-btn:hover { background: var(--red); border-color: var(--red); color: #fff; }
+  #clear-btn:hover  { background: var(--red); border-color: var(--red); color: #fff; }
+  #reboot-btn {
+    padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--btn); color: var(--text); cursor: pointer; font-size: 11px;
+  }
+  #reboot-btn:hover { background: var(--red); border-color: var(--red); color: #fff; }
 
   /* ── Panels ── */
   .panel {
@@ -210,6 +215,7 @@
     </div>
     <span id="queue-badge">Queue: 0</span>
     <button id="clear-btn" onclick="clearQueue()">Clear queue</button>
+    <button id="reboot-btn" onclick="rebootTurtle()" title="Reboot the turtle computer">⟳ Reboot turtle</button>
   </header>
 
   <!-- ── Left panel: controls ── -->
@@ -844,6 +850,16 @@ async function sendCmd(payload) {
 
 window.clearQueue = async function() {
   await fetch('/api/command/clear', { method: 'POST' });
+};
+
+window.rebootTurtle = async function() {
+  if (!confirm('Reboot the turtle? It will disconnect briefly then reconnect.')) return;
+  await fetch('/api/command/clear', { method: 'POST' });  // clear queue first
+  await fetch('/api/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'reboot' }),
+  });
 };
 
 function flashButton(action) {
